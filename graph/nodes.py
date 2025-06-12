@@ -2,10 +2,10 @@ import logging
 import time
 import numpy as np
 
-from utils import get_dataframe, update_task_status, get_config
+from ..utils import get_dataframe, update_task_status, get_config
 from .agents.prompt_generator import generate_context
 from .agents.llm_inference import inference_llm
-from verifier import verify_sentence
+from ..verifier import verify_sentence
 from .agents.llm_verifier import verify_opinion
 from .state import FilterState
 

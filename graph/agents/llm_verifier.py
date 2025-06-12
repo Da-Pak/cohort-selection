@@ -4,7 +4,7 @@ import openai
 import torch
 from typing import Dict, Any, Optional, List, Union, Tuple, Literal
 from cachetools import cached
-from utils import timeit, safe_json_loads, VERIFIER_CACHE, get_config, get_loaded_model, is_model_loaded
+from ...utils import timeit, safe_json_loads, VERIFIER_CACHE, get_config, get_loaded_model, is_model_loaded
 import time
 # ----------------------------------------------------------------------------------------------------------
 VERIFIER_PROMPT_TEMPLATE = """ 

@@ -3,7 +3,7 @@ import logging
 from typing import Dict, Any, Optional
 import openai
 from cachetools import cached
-from utils import timeit, safe_json_loads, PROMPT_CACHE, get_config
+from ...utils import timeit, safe_json_loads, PROMPT_CACHE, get_config
 
 from dotenv import load_dotenv
 load_dotenv()
