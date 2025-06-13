@@ -107,7 +107,7 @@ def verify_with_openai(text: str, question: str, context: str, inference_result:
                 # Validate result
                 if "is_correct" in result:
                     # Normalize opinion value
-                    is_valid = result["is_correct"].lower() == "present"
+                    is_valid = result["is_correct"]
                     logger.info(f"Verification completed: opinion - {opinion}, Verification result - {is_valid}")
                     return is_valid
                
@@ -197,7 +197,7 @@ def verify_with_local_model(text: str, question: str, context: str, inference_re
                 # Validate result
                 if "is_correct" in result:
                     # Normalize opinion value
-                    is_valid = result["is_correct"].lower().strip()
+                    is_valid = result["is_correct"]
                     logger.info(f"Verification completed: opinion - {opinion}, Verification result - {is_valid}")
                     return is_valid
                
@@ -241,10 +241,13 @@ def verify_opinion(text: str, question: str, context: str, inference_result: Dic
             result = verify_with_openai(text, question, context, inference_result, temperature)
         # print('verify result', result)
         # 타임아웃 체크
+        if result in [True, 'True','true']:
+            result = True
+        else:
+            result = False
         elapsed_time = time.time() - start_time
         if elapsed_time > timeout_seconds:
             logger.warning(f"Verification took too long: {elapsed_time:.2f} seconds")
-        
         return result
     except Exception as e:
         logger.error(f"Error in verify_opinion: {str(e)}")
