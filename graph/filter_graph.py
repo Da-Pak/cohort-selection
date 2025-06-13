@@ -5,31 +5,27 @@ import pandas as pd
 
 from ..utils import get_config, save_dataframe
 from .state import FilterState, get_initial_state
-from .nodes import load_data, generate_medical_context, inference_case, validate_case, validate_sentence, finalize_results, handle_error
+from .nodes import load_data, generate_medical_context, process_all_texts, finalize_results, handle_error
 
 logger = logging.getLogger(__name__)
 
 
-def should_retry(state: FilterState) -> Literal["retry", "error", "continue"]:
-    """Decide whether to retry processing or fail"""
+def should_retry(state: FilterState) -> Literal["error", "continue"]:
+    """Decide whether to continue processing or handle error"""
     # 먼저 실패한 경우 처리
     if state["status"] == "failed":
         return "error"
     
-    # 성공적으로 처리된 경우 (status가 completed인 경우)
-    if state["status"] == "completed":
+    # 성공적으로 처리된 경우 (status가 completed 또는 processing인 경우)
+    if state["status"] in ["completed", "processing"]:
         return "continue"
     
     # 결과가 생성된 경우도 성공으로 간주
     if "results" in state and len(state["results"]) > 0:
         return "continue"
     
-    # 재시도 횟수 확인
-    config = get_config()
-    if state.get("retries", 0) <= config.retry_count:
-        return "retry"
-    else:
-        return "error"
+    # 기본적으로 에러 처리
+    return "error"
 
 
 def create_filter_graph() -> StateGraph:
@@ -40,20 +36,19 @@ def create_filter_graph() -> StateGraph:
     # Add nodes
     graph.add_node("load_data", load_data)
     graph.add_node("generate_context", generate_medical_context)
-    graph.add_node("inference_case", inference_case)
+    graph.add_node("process_texts", process_all_texts)
     graph.add_node("finalize_results", finalize_results)
     graph.add_node("handle_error", handle_error)
     
     # Define the edges
     graph.add_edge("load_data", "generate_context")
-    graph.add_edge("generate_context", "inference_data")
+    graph.add_edge("generate_context", "process_texts")
     
     # Conditional edges for processing
     graph.add_conditional_edges(
-        "inference_case",
+        "process_texts",
         should_retry,
         {
-            "retry": "inference_case",
             "error": "handle_error",
             "continue": "finalize_results"
         }
@@ -86,6 +81,7 @@ class FilterRunner:
             data_id (str): 필터링할 데이터프레임의 ID
             task_id (str): 상태 추적을 위한 작업 ID
             target_column (str): 필터링할 대상 열 이름 (기본값: "text")
+            temperature (float): LLM 온도 설정
             
         Returns:
             Tuple[pd.DataFrame, str]: 필터링된 데이터프레임과 결과 데이터 ID

@@ -29,6 +29,30 @@ class FilterState(TypedDict):
     retries: int
 
 
+class SingleTextState(TypedDict):
+    """단일 텍스트 처리용 서브그래프 상태"""
+    # 입력 데이터
+    text: str
+    context: str
+    question: str
+    temperature: float
+    llm_type: str
+    
+    # 처리 결과
+    sentence: Optional[str]
+    opinion: Optional[str]
+    verified_sentence: Optional[bool]
+    verified_opinion: Optional[bool]
+    
+    # 루프 제어
+    retry_count: int
+    max_retries: int
+    
+    # 상태 관리
+    current_step: str  # "inference", "validate_sentence", "validate_case", "completed"
+    error: Optional[str]
+
+
 def get_initial_state(question: str, data_id: str, task_id: str, target_column: str, temperature: float) -> FilterState:
     """필터 그래프의 초기 상태를 생성합니다."""
     return FilterState(
@@ -53,4 +77,30 @@ def get_initial_state(question: str, data_id: str, task_id: str, target_column: 
         # 오류 처리
         error=None,
         retries=0
+    )
+
+
+def get_initial_single_text_state(text: str, context: str, question: str, temperature: float, llm_type: str) -> SingleTextState:
+    """단일 텍스트 처리용 초기 상태를 생성합니다."""
+    return SingleTextState(
+        # 입력 데이터
+        text=text,
+        context=context,
+        question=question,
+        temperature=temperature,
+        llm_type=llm_type,
+        
+        # 처리 결과
+        sentence=None,
+        opinion=None,
+        verified_sentence=None,
+        verified_opinion=None,
+        
+        # 루프 제어
+        retry_count=0,
+        max_retries=5,
+        
+        # 상태 관리
+        current_step="inference",
+        error=None
     ) 

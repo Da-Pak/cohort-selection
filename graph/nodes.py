@@ -1,16 +1,320 @@
 import logging
 import time
 import numpy as np
+from langgraph.graph import StateGraph, END
+from typing import Literal
 
 from ..utils import get_dataframe, update_task_status, get_config
 from .agents.prompt_generator import generate_context
 from .agents.llm_inference import inference_llm
 from ..verifier import verify_sentence
 from .agents.llm_verifier import verify_opinion
-from .state import FilterState
+from .state import FilterState, SingleTextState, get_initial_single_text_state
 
 logger = logging.getLogger(__name__)
 
+
+# =============================================================================
+# 서브그래프: 단일 텍스트 처리용 노드들
+# =============================================================================
+
+def inference_single_text(state: SingleTextState) -> SingleTextState:
+    """단일 텍스트에 대한 추론을 수행합니다."""
+    try:
+        logger.info(f"추론 시작 - 시도 {state['retry_count'] + 1}/{state['max_retries']}")
+        
+        # LLM 추론 실행
+        result = inference_llm(
+            state["text"], 
+            state["context"], 
+            state["question"],
+            llm_type=state["llm_type"],
+            temperature=state["temperature"]
+        )
+        
+        # 결과 검증 - 필수 키가 있는지 확인
+        sentence = result.get("sentence", "").strip() if result.get("sentence") else ""
+        opinion = result.get("opinion", "").strip() if result.get("opinion") else ""
+        
+        # 추론 결과가 유효한지 확인
+        if not sentence or not opinion:
+            logger.warning("추론 결과가 불완전함 - 재시도 필요")
+            return {
+                **state,
+                "sentence": None,
+                "opinion": None,
+                "current_step": "inference",
+                "retry_count": state["retry_count"] + 1,
+                "error": "추론 결과가 불완전함"
+            }
+        
+        logger.info("추론 성공")
+        return {
+            **state,
+            "sentence": sentence,
+            "opinion": opinion,
+            "current_step": "validate_sentence",
+            "error": None
+        }
+        
+    except Exception as e:
+        error_msg = f"추론 중 오류 발생: {str(e)}"
+        logger.error(error_msg)
+        return {
+            **state,
+            "sentence": None,
+            "opinion": None,
+            "current_step": "inference",
+            "retry_count": state["retry_count"] + 1,
+            "error": error_msg
+        }
+
+
+def validate_sentence_node(state: SingleTextState) -> SingleTextState:
+    """문장 검증을 수행합니다."""
+    try:
+        logger.info("문장 검증 시작")
+        
+        sentence = state.get("sentence", "")
+        if not sentence:
+            # 이 상황은 라우터에서 이미 체크되어야 하지만, 안전을 위해 처리
+            logger.error("문장이 없음 - 예상치 못한 상황")
+            return {
+                **state,
+                "verified_sentence": False,
+                "current_step": "inference",
+                "retry_count": state["retry_count"] + 1,
+                "error": "문장이 없음"
+            }
+        
+        # 문장 검증 실행
+        verified = verify_sentence(state["text"], sentence)
+        
+        if verified:
+            logger.info("문장 검증 성공")
+            return {
+                **state,
+                "verified_sentence": True,
+                "current_step": "validate_case",
+                "error": None
+            }
+        else:
+            logger.info("문장 검증 실패 - 재시도 필요")
+            return {
+                **state,
+                "verified_sentence": False,
+                "current_step": "inference",
+                "retry_count": state["retry_count"] + 1,
+                "error": None  # 검증 실패는 오류가 아님
+            }
+            
+    except Exception as e:
+        error_msg = f"문장 검증 중 오류 발생: {str(e)}"
+        logger.error(error_msg)
+        return {
+            **state,
+            "verified_sentence": False,
+            "current_step": "inference",
+            "retry_count": state["retry_count"] + 1,
+            "error": error_msg
+        }
+
+
+def validate_case_node(state: SingleTextState) -> SingleTextState:
+    """케이스 검증을 수행합니다."""
+    try:
+        logger.info("케이스 검증 시작")
+        
+        # 필요한 데이터 확인
+        sentence = state.get("sentence", "")
+        opinion = state.get("opinion", "")
+        
+        if not sentence or not opinion:
+            # 이 상황은 라우터에서 이미 체크되어야 하지만, 안전을 위해 처리
+            logger.error("추론 결과가 불완전함 - 예상치 못한 상황")
+            return {
+                **state,
+                "verified_opinion": False,
+                "current_step": "inference",
+                "retry_count": state["retry_count"] + 1,
+                "error": "추론 결과 불완전"
+            }
+        
+        # 케이스 검증 실행 (의견 검증)
+        result = {
+            "sentence": sentence,
+            "opinion": opinion
+        }
+        
+        verified_opinion = verify_opinion(
+            state["text"], 
+            state["question"], 
+            state["context"],
+            result,
+            llm_type=state["llm_type"],
+            temperature=state["temperature"]
+        )
+        
+        if verified_opinion:
+            logger.info("케이스 검증 성공 - 처리 완료")
+            return {
+                **state,
+                "verified_opinion": True,
+                "current_step": "completed",
+                "error": None
+            }
+        else:
+            logger.info("케이스 검증 실패 - 재시도 필요")
+            return {
+                **state,
+                "verified_opinion": False,
+                "current_step": "inference",
+                "retry_count": state["retry_count"] + 1,
+                "error": None  # 검증 실패는 오류가 아님
+            }
+            
+    except Exception as e:
+        error_msg = f"케이스 검증 중 오류 발생: {str(e)}"
+        logger.error(error_msg)
+        return {
+            **state,
+            "verified_opinion": None,
+            "current_step": "inference", 
+            "retry_count": state["retry_count"] + 1,
+            "error": error_msg
+        }
+
+
+# =============================================================================
+# 서브그래프 라우터 함수들
+# =============================================================================
+
+def route_after_inference(state: SingleTextState) -> Literal["validate_sentence", "inference", "completed"]:
+    """추론 후 다음 단계 결정"""
+    # 최대 재시도 횟수 초과 시 종료
+    if state["retry_count"] >= state["max_retries"]:
+        logger.warning(f"최대 재시도 횟수({state['max_retries']}) 초과 - 처리 종료")
+        return "completed"
+    
+    # 추론 결과 확인
+    sentence = state.get("sentence")
+    opinion = state.get("opinion")
+    error = state.get("error")
+    
+    # 오류가 있거나 추론 결과가 없는 경우 재시도
+    if error or not sentence or not opinion:
+        logger.info("추론 실패 - 재시도 필요")
+        return "inference"
+    
+    # 추론 성공 시 문장 검증으로 진행
+    logger.info("추론 성공 - 문장 검증 단계로 진행")
+    return "validate_sentence"
+
+
+def route_after_sentence_validation(state: SingleTextState) -> Literal["validate_case", "inference", "completed"]:
+    """문장 검증 후 다음 단계 결정"""
+    # 최대 재시도 횟수 초과 시 종료
+    if state["retry_count"] >= state["max_retries"]:
+        logger.warning(f"최대 재시도 횟수({state['max_retries']}) 초과 - 처리 종료")
+        return "completed"
+    
+    verified_sentence = state.get("verified_sentence")
+    
+    # 문장 검증 성공 시 케이스 검증으로 진행
+    if verified_sentence is True:
+        logger.info("문장 검증 성공 - 케이스 검증 단계로 진행")
+        return "validate_case"
+    
+    # 문장 검증 실패 시 추론부터 다시 시작
+    elif verified_sentence is False:
+        logger.info("문장 검증 실패 - 추론 단계로 재시도")
+        return "inference"
+    
+    # 예상치 못한 상황 (verified_sentence가 None 등)
+    logger.warning("문장 검증 결과가 예상치 못한 값 - 추론 단계로 재시도")
+    return "inference"
+
+
+def route_after_case_validation(state: SingleTextState) -> Literal["inference", "completed"]:
+    """케이스 검증 후 다음 단계 결정"""
+    verified_opinion = state.get("verified_opinion")
+    
+    # 케이스 검증 성공 시 완료
+    if verified_opinion is True:
+        logger.info("케이스 검증 성공 - 처리 완료")
+        return "completed"
+    
+    # 최대 재시도 횟수 초과 시 종료
+    if state["retry_count"] >= state["max_retries"]:
+        logger.warning(f"최대 재시도 횟수({state['max_retries']}) 초과 - 처리 종료")
+        return "completed"
+    
+    # 케이스 검증 실패 시 추론부터 다시 시작
+    if verified_opinion is False:
+        logger.info("케이스 검증 실패 - 추론 단계로 재시도")
+        return "inference"
+    
+    # 예상치 못한 상황 (verified_opinion이 None 등)
+    logger.warning("케이스 검증 결과가 예상치 못한 값 - 추론 단계로 재시도")
+    return "inference"
+
+
+# =============================================================================
+# 서브그래프 생성
+# =============================================================================
+
+def create_single_text_subgraph():
+    """단일 텍스트 처리용 서브그래프를 생성합니다."""
+    sub = StateGraph(SingleTextState)
+    
+    # 노드 추가
+    sub.add_node("inference", inference_single_text)
+    sub.add_node("validate_sentence", validate_sentence_node)
+    sub.add_node("validate_case", validate_case_node)
+    
+    # 엣지 추가 (조건부 라우팅)
+    sub.add_conditional_edges(
+        "inference",
+        route_after_inference,
+        {
+            "validate_sentence": "validate_sentence",
+            "inference": "inference",  # 추론 실패 시 재시도
+            "completed": END
+        }
+    )
+    
+    sub.add_conditional_edges(
+        "validate_sentence", 
+        route_after_sentence_validation,
+        {
+            "validate_case": "validate_case",
+            "inference": "inference",
+            "completed": END
+        }
+    )
+    
+    sub.add_conditional_edges(
+        "validate_case",
+        route_after_case_validation, 
+        {
+            "inference": "inference",
+            "completed": END
+        }
+    )
+    
+    # 시작점 설정
+    sub.set_entry_point("inference")
+    
+    return sub.compile()
+
+
+# 서브그래프 인스턴스 생성
+single_text_subgraph = create_single_text_subgraph()
+
+
+# =============================================================================
+# 메인 그래프 노드들
+# =============================================================================
 
 def load_data(state: FilterState) -> FilterState:
     """데이터를 캐시에서 로드하고 상태를 업데이트합니다."""
@@ -61,7 +365,7 @@ def generate_medical_context(state: FilterState) -> FilterState:
         
         # Generate context
         context = generate_context(question, temperature)
-        logger.info(f"Context generated: {len(context)} cha, racters")
+        logger.info(f"Context generated: {len(context)} characters")
         update_task_status(task_id, "processing", 0.3, "Context generated")
         
         return {**state, "context": context, "progress": 0.3, "message": "Context generated"}
@@ -73,8 +377,8 @@ def generate_medical_context(state: FilterState) -> FilterState:
         return {**state, "status": "failed", "error": error_msg}
 
 
-def inference_case(state: FilterState) -> FilterState:
-    """모든 텍스트를 순차적으로 처리합니다."""
+def process_all_texts(state: FilterState) -> FilterState:
+    """서브그래프를 사용하여 모든 텍스트를 처리합니다."""
     task_id = state["task_id"]
     df = state["dataframe"]
     context = state["context"]
@@ -88,25 +392,20 @@ def inference_case(state: FilterState) -> FilterState:
         total_texts = len(texts)
         
         # 상태 업데이트
-        update_task_status(
-            task_id, 
-            "processing", 
-            0.3, 
-            "데이터 처리 중"
-        )
+        update_task_status(task_id, "processing", 0.3, "데이터 처리 중")
         
         # 결과 리스트 초기화
         inference_results = []
         
-        # 각 텍스트 순차적으로 처리
+        # 각 텍스트를 서브그래프로 처리
         for idx, text in enumerate(texts):
             # 진행률 계산
-            progress = np.round((idx / total_texts) * 100, 2)
-
-            logger.info(f"{idx+1}번째 시작 : 진행률 {progress} -----------------------------------")
+            progress = 0.3 + (idx / total_texts) * 0.5  # 0.3 ~ 0.8 범위
+            
+            logger.info(f"{idx+1}번째 텍스트 처리 시작 : 진행률 {progress:.1%}")
             
             # 상태 업데이트
-            if idx % 10 == 0 or idx == len(texts) - 1:  # 10개 항목마다 또는 마지막 항목에서 상태 업데이트
+            if idx % 10 == 0 or idx == len(texts) - 1:
                 update_task_status(
                     task_id, 
                     "processing", 
@@ -114,283 +413,59 @@ def inference_case(state: FilterState) -> FilterState:
                     f"항목 처리 중 {idx+1}/{total_texts}"
                 )
             
-            # 단일 텍스트에 대한 추론 실행
-            try:
-                result = inference_llm(
-                    text, 
-                    context, 
-                    state["question"],
-                    llm_type=config.llm_config.llm_type,
-                    temperature = temperature
-                )
-            except Exception as inference_error:
-                logger.error(f"추중 오류 발생: {inference_error}")
-                result['sentence'] = None
-                result['opinion'] = None
-                
-            # 문장 검증
-            sentence = result.get("sentence", "")
-            result["verified_sentence"] = verify_sentence(text, sentence)
+            # 서브그래프 입력 준비
+            sub_input = get_initial_single_text_state(
+                text=text,
+                context=context,
+                question=state["question"],
+                temperature=temperature,
+                llm_type=config.llm_config.llm_type
+            )
             
             try:
-                result["verified_opinion"] = verify_opinion(
-                    text, 
-                    state["question"], 
-                    context,
-                    result,
-                    llm_type=config.llm_config.llm_type,
-                    temperature = temperature
-                )
-            except Exception as verify_error:
-                logger.error(f"의견 검증 중 오류 발생: {verify_error}")
-                result["verified_opinion"] = None  # 검증 실패 시 None으로 처리
+                # 서브그래프 실행
+                sub_result = single_text_subgraph.invoke(sub_input)
+                
+                # 결과 변환
+                result = {
+                    "sentence": sub_result.get("sentence", ""),
+                    "opinion": sub_result.get("opinion", "Uncertain"),
+                    "verified_sentence": sub_result.get("verified_sentence", False),
+                    "verified_opinion": sub_result.get("verified_opinion", None),
+                    "retry_count": sub_result.get("retry_count", 0),
+                    "error": sub_result.get("error", None)
+                }
+                
+            except Exception as sub_error:
+                logger.error(f"서브그래프 실행 중 오류 발생: {sub_error}")
+                result = {
+                    "sentence": None,
+                    "opinion": None,
+                    "verified_sentence": False,
+                    "verified_opinion": None,
+                    "retry_count": 5,
+                    "error": str(sub_error)
+                }
             
             # 결과에 추가
             inference_results.append(result)
         
         # 상태 업데이트
-        update_task_status(
-            task_id, 
-            "processing", 
-            0.8, 
-            "데이터 처리 완료"
-        )
+        update_task_status(task_id, "processing", 0.8, "데이터 처리 완료")
         
         return {
             **state, 
             "results": inference_results, 
             "progress": 0.8,
-            "status": "completed",  # 명시적으로 completed 상태 설정
+            "status": "processing",
             "message": "데이터 처리 완료"
         }
         
     except Exception as e:
         error_msg = f"데이터 처리 중 오류 발생: {str(e)}"
         logger.error(error_msg)
-        
-        # 재시도 카운터 증가
-        retries = state["retries"] + 1
-        
-        if retries <= config.retry_count:
-            logger.info(f"데이터 처리 재시도 중, 시도 {retries}/{config.retry_count}")
-            time.sleep(1)  # 재시도 전 대기
-            return {**state, "retries": retries}
-        else:
-            update_task_status(task_id, "failed", 0.3, error_msg)
-            return {**state, "status": "failed", "error": error_msg}
-
-
-def validate_sentence(state: FilterState) -> FilterState:
-    """모든 텍스트를 순차적으로 처리합니다."""
-    task_id = state["task_id"]
-    df = state["dataframe"]
-    context = state["context"]
-    target_column = state["target_column"]
-    temperature = state["temperature"]
-    config = get_config()
-    
-    try:
-        # 모든 텍스트 가져오기
-        texts = df[target_column].tolist()
-        total_texts = len(texts)
-        
-        # 상태 업데이트
-        update_task_status(
-            task_id, 
-            "processing", 
-            0.3, 
-            "데이터 처리 중"
-        )
-        
-        # 결과 리스트 초기화
-        inference_results = []
-        
-        # 각 텍스트 순차적으로 처리
-        for idx, text in enumerate(texts):
-            # 진행률 계산
-            progress = np.round((idx / total_texts) * 100, 2)
-
-            logger.info(f"{idx+1}번째 시작 : 진행률 {progress} -----------------------------------")
-            
-            # 상태 업데이트
-            if idx % 10 == 0 or idx == len(texts) - 1:  # 10개 항목마다 또는 마지막 항목에서 상태 업데이트
-                update_task_status(
-                    task_id, 
-                    "processing", 
-                    progress, 
-                    f"항목 처리 중 {idx+1}/{total_texts}"
-                )
-            
-            # 단일 텍스트에 대한 추론 실행
-            try:
-                result = inference_llm(
-                    text, 
-                    context, 
-                    state["question"],
-                    llm_type=config.llm_config.llm_type,
-                    temperature = temperature
-                )
-            except Exception as inference_error:
-                logger.error(f"추중 오류 발생: {inference_error}")
-                result['sentence'] = None
-                result['opinion'] = None
-                
-            # 문장 검증
-            sentence = result.get("sentence", "")
-            result["verified_sentence"] = verify_sentence(text, sentence)
-            
-            try:
-                result["verified_opinion"] = verify_opinion(
-                    text, 
-                    state["question"], 
-                    context,
-                    result,
-                    llm_type=config.llm_config.llm_type,
-                    temperature = temperature
-                )
-            except Exception as verify_error:
-                logger.error(f"의견 검증 중 오류 발생: {verify_error}")
-                result["verified_opinion"] = None  # 검증 실패 시 None으로 처리
-            
-            # 결과에 추가
-            inference_results.append(result)
-        
-        # 상태 업데이트
-        update_task_status(
-            task_id, 
-            "processing", 
-            0.8, 
-            "데이터 처리 완료"
-        )
-        
-        return {
-            **state, 
-            "results": inference_results, 
-            "progress": 0.8,
-            "status": "completed",  # 명시적으로 completed 상태 설정
-            "message": "데이터 처리 완료"
-        }
-        
-    except Exception as e:
-        error_msg = f"데이터 처리 중 오류 발생: {str(e)}"
-        logger.error(error_msg)
-        
-        # 재시도 카운터 증가
-        retries = state["retries"] + 1
-        
-        if retries <= config.retry_count:
-            logger.info(f"데이터 처리 재시도 중, 시도 {retries}/{config.retry_count}")
-            time.sleep(1)  # 재시도 전 대기
-            return {**state, "retries": retries}
-        else:
-            update_task_status(task_id, "failed", 0.3, error_msg)
-            return {**state, "status": "failed", "error": error_msg}
-
-def validate_case(state: FilterState) -> FilterState:
-    """모든 텍스트를 순차적으로 처리합니다."""
-    task_id = state["task_id"]
-    df = state["dataframe"]
-    context = state["context"]
-    target_column = state["target_column"]
-    temperature = state["temperature"]
-    config = get_config()
-    
-    try:
-        # 모든 텍스트 가져오기
-        texts = df[target_column].tolist()
-        total_texts = len(texts)
-        
-        # 상태 업데이트
-        update_task_status(
-            task_id, 
-            "processing", 
-            0.3, 
-            "데이터 처리 중"
-        )
-        
-        # 결과 리스트 초기화
-        inference_results = []
-        
-        # 각 텍스트 순차적으로 처리
-        for idx, text in enumerate(texts):
-            # 진행률 계산
-            progress = np.round((idx / total_texts) * 100, 2)
-
-            logger.info(f"{idx+1}번째 시작 : 진행률 {progress} -----------------------------------")
-            
-            # 상태 업데이트
-            if idx % 10 == 0 or idx == len(texts) - 1:  # 10개 항목마다 또는 마지막 항목에서 상태 업데이트
-                update_task_status(
-                    task_id, 
-                    "processing", 
-                    progress, 
-                    f"항목 처리 중 {idx+1}/{total_texts}"
-                )
-            
-            # 단일 텍스트에 대한 추론 실행
-            try:
-                result = inference_llm(
-                    text, 
-                    context, 
-                    state["question"],
-                    llm_type=config.llm_config.llm_type,
-                    temperature = temperature
-                )
-            except Exception as inference_error:
-                logger.error(f"추중 오류 발생: {inference_error}")
-                result['sentence'] = None
-                result['opinion'] = None
-                
-            # 문장 검증
-            sentence = result.get("sentence", "")
-            result["verified_sentence"] = verify_sentence(text, sentence)
-            
-            try:
-                result["verified_opinion"] = verify_opinion(
-                    text, 
-                    state["question"], 
-                    context,
-                    result,
-                    llm_type=config.llm_config.llm_type,
-                    temperature = temperature
-                )
-            except Exception as verify_error:
-                logger.error(f"의견 검증 중 오류 발생: {verify_error}")
-                result["verified_opinion"] = None  # 검증 실패 시 None으로 처리
-            
-            # 결과에 추가
-            inference_results.append(result)
-        
-        # 상태 업데이트
-        update_task_status(
-            task_id, 
-            "processing", 
-            0.8, 
-            "데이터 처리 완료"
-        )
-        
-        return {
-            **state, 
-            "results": inference_results, 
-            "progress": 0.8,
-            "status": "completed",  # 명시적으로 completed 상태 설정
-            "message": "데이터 처리 완료"
-        }
-        
-    except Exception as e:
-        error_msg = f"데이터 처리 중 오류 발생: {str(e)}"
-        logger.error(error_msg)
-        
-        # 재시도 카운터 증가
-        retries = state["retries"] + 1
-        
-        if retries <= config.retry_count:
-            logger.info(f"데이터 처리 재시도 중, 시도 {retries}/{config.retry_count}")
-            time.sleep(1)  # 재시도 전 대기
-            return {**state, "retries": retries}
-        else:
-            update_task_status(task_id, "failed", 0.3, error_msg)
-            return {**state, "status": "failed", "error": error_msg}
+        update_task_status(task_id, "failed", 0.3, error_msg)
+        return {**state, "status": "failed", "error": error_msg}
 
 
 def finalize_results(state: FilterState) -> FilterState:
@@ -462,4 +537,4 @@ def handle_error(state: FilterState) -> FilterState:
     logger.error(f"파이프라인 오류: {error}")
     update_task_status(task_id, "failed", 0.0, f"오류: {error}")
     
-    return {**state, "status": "failed", "message": f"오류: {error}"} 
+    return {**state, "status": "failed", "message": f"오류: {error}"}
