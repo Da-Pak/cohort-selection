@@ -2,7 +2,7 @@ import logging
 import re
 from difflib import SequenceMatcher
 from typing import Dict, Any, Optional, List, Tuple, Union
-from utils import timeit
+from .utils import timeit
 
 logger = logging.getLogger(__name__)
 

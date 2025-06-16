@@ -5,28 +5,9 @@ import pandas as pd
 
 from ..utils import get_config, save_dataframe
 from .state import FilterState, get_initial_state
-from .nodes import load_data, generate_medical_context, process_all_texts, finalize_results, handle_error
+from .nodes import load_data, generate_medical_context, process_all_texts, finalize_results
 
 logger = logging.getLogger(__name__)
-
-
-def should_retry(state: FilterState) -> Literal["error", "continue"]:
-    """Decide whether to continue processing or handle error"""
-    # 먼저 실패한 경우 처리
-    if state["status"] == "failed":
-        return "error"
-    
-    # 성공적으로 처리된 경우 (status가 completed 또는 processing인 경우)
-    if state["status"] in ["completed", "processing"]:
-        return "continue"
-    
-    # 결과가 생성된 경우도 성공으로 간주
-    if "results" in state and len(state["results"]) > 0:
-        return "continue"
-    
-    # 기본적으로 에러 처리
-    return "error"
-
 
 def create_filter_graph() -> StateGraph:
     """Create the filtering graph structure"""
@@ -38,24 +19,12 @@ def create_filter_graph() -> StateGraph:
     graph.add_node("generate_context", generate_medical_context)
     graph.add_node("process_texts", process_all_texts)
     graph.add_node("finalize_results", finalize_results)
-    graph.add_node("handle_error", handle_error)
     
     # Define the edges
     graph.add_edge("load_data", "generate_context")
     graph.add_edge("generate_context", "process_texts")
+    graph.add_edge("process_texts", "finalize_results")
     
-    # Conditional edges for processing
-    graph.add_conditional_edges(
-        "process_texts",
-        should_retry,
-        {
-            "error": "handle_error",
-            "continue": "finalize_results"
-        }
-    )
-    
-    # Connect error handler and finalize to end
-    graph.add_edge("handle_error", END)
     graph.add_edge("finalize_results", END)
     
     # Set the entry point

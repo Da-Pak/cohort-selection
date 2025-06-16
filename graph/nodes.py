@@ -13,11 +13,6 @@ from .state import FilterState, SingleTextState, get_initial_single_text_state
 
 logger = logging.getLogger(__name__)
 
-
-# =============================================================================
-# 서브그래프: 단일 텍스트 처리용 노드들
-# =============================================================================
-
 def inference_single_text(state: SingleTextState) -> SingleTextState:
     """단일 텍스트에 대한 추론을 수행합니다."""
     try:
@@ -184,11 +179,6 @@ def validate_case_node(state: SingleTextState) -> SingleTextState:
             "error": error_msg
         }
 
-
-# =============================================================================
-# 서브그래프 라우터 함수들
-# =============================================================================
-
 def route_after_inference(state: SingleTextState) -> Literal["validate_sentence", "inference", "completed"]:
     """추론 후 다음 단계 결정"""
     # 최대 재시도 횟수 초과 시 종료
@@ -258,11 +248,6 @@ def route_after_case_validation(state: SingleTextState) -> Literal["inference", 
     logger.warning("케이스 검증 결과가 예상치 못한 값 - 추론 단계로 재시도")
     return "inference"
 
-
-# =============================================================================
-# 서브그래프 생성
-# =============================================================================
-
 def create_single_text_subgraph():
     """단일 텍스트 처리용 서브그래프를 생성합니다."""
     sub = StateGraph(SingleTextState)
@@ -302,19 +287,11 @@ def create_single_text_subgraph():
         }
     )
     
-    # 시작점 설정
     sub.set_entry_point("inference")
     
     return sub.compile()
 
-
-# 서브그래프 인스턴스 생성
 single_text_subgraph = create_single_text_subgraph()
-
-
-# =============================================================================
-# 메인 그래프 노드들
-# =============================================================================
 
 def load_data(state: FilterState) -> FilterState:
     """데이터를 캐시에서 로드하고 상태를 업데이트합니다."""
@@ -423,9 +400,6 @@ def process_all_texts(state: FilterState) -> FilterState:
             )
             
             try:
-                # 서브그래프 실행
-                sub_result = single_text_subgraph.invoke(sub_input)
-                
                 # 결과 변환
                 result = {
                     "sentence": sub_result.get("sentence", ""),
@@ -527,14 +501,3 @@ def finalize_results(state: FilterState) -> FilterState:
         logger.error(error_msg)
         update_task_status(task_id, "failed", 0.9, error_msg)
         return {**state, "status": "failed", "error": error_msg}
-
-
-def handle_error(state: FilterState) -> FilterState:
-    """파이프라인 오류 처리"""
-    task_id = state["task_id"]
-    error = state.get("error", "알 수 없는 오류")
-    
-    logger.error(f"파이프라인 오류: {error}")
-    update_task_status(task_id, "failed", 0.0, f"오류: {error}")
-    
-    return {**state, "status": "failed", "message": f"오류: {error}"}
