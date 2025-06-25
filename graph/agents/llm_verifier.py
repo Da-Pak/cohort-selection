@@ -7,34 +7,52 @@ from cachetools import cached
 from ...utils import timeit, safe_json_loads, VERIFIER_CACHE, get_config, get_loaded_model, is_model_loaded
 import time
 # ----------------------------------------------------------------------------------------------------------
-VERIFIER_PROMPT_TEMPLATE = """ 
+VERIFIER_PROMPT_TEMPLATE = """
 You are a medical expert acting as a "verifier" in a multi-stage system designed to analyze medical imaging reports.
 
-In a previous step, a "LLM" acting as an "case identifier" analyzed a clinical report and attempted to answer a specific clinical question. 
+In a previous step, a "LLM" acting as a "case identifier" analyzed a clinical report and attempted to answer a specific clinical question.
 
-The LLM extracted a sentence from the report and assigned a label (Present / Absent / Uncertain) to indicate whether the condition in question was present, absent, or uncertain in that sentence.
+The LLM extracted a sentence from the report and assigned a label (Present / Absent) to indicate whether the condition in question was present or absent in that sentence.
 
 The label was assigned according to the following guideline:
-If the sentence clearly supports the presence of the condition, then the case identifier return: **Present**  
-If the sentence clearly supports the absence of the condition, then the case identifier return: **Absent**  
-If the sentence is ambiguous, hypothetical, or uses uncertain language (e.g., "possible,"r/o"), then the case identifier return: **Uncertain**
+If the sentence clearly supports the presence of the condition as currently active or ongoing, then the case identifier returns: "Present"
+
+If the sentence clearly supports the absence of the condition, describes the condition as only a possibility, history, hypothetical, protocol description, or if no relevant sentence is found, then the case identifier returns: "Absent"
 
 You will receive the following input:
-- A clinical report: {text}
-- A clinical question: {question}
+
 - Context for interpretation: {context}
+
+---------------------------------------------------------------------------
+
+- A clinical question: {question}
+
+---------------------------------------------------------------------------
+
+- A clinical report: {text}
+
+---------------------------------------------------------------------------
+
 - A LLM (case identifier)'s decision, including:
-  - Extracted sentence: "{sentence}"
-  - Label assigned: "{opinion}" (Present / Absent / Uncertain)
+    - Label assigned: "{opinion}" (Present / Absent)
+    - Extracted sentence: "{sentence}"
 
 Your task is to independently verify the correctness of the LLM's label based on the extracted sentence and the context.
 Then, compare it with the label assigned by the case identifier (LLM).
 
-If the LLM's label matches your judgment, return `true`. If not, return `false`.
+Special considerations:
 
-Your response must strictly follow the JSON format below:
+- Only accept "Present" if the evidence is clear that the condition is currently present. Past, resolved, or historical references should not be labeled as present unless specifically described as ongoing.
+- If the extracted sentence is a protocol description, general instruction, or does not directly reference the patient's current clinical findings, it should not be considered valid as evidence of presence.
+- If the extracted sentence is "No relevant sentence found", accept this as appropriate if no direct evidence exists in the report.
+
+If you determine the answer is incorrect, provide a concise reason and a concrete correction_hint that will help the case identifier revise its answer and avoid the same mistake.
+
+Return your response in the following JSON format:
 {{
-  "is_correct": True or False 
+"is_correct": "correct" or "incorrect",
+"reason": "[If incorrect, briefly state why the answer was incorrect. If correct, you may leave this empty or state 'Answer is appropriate.']",
+"correction_hint": "[If incorrect, provide a clear, actionable instruction for improvement. If correct, leave this field empty.]"
 }}
 """
 # ----------------------------------------------------------------------------------------------------------
