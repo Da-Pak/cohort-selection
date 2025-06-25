@@ -10,52 +10,35 @@ import time
 VERIFIER_PROMPT_TEMPLATE = """
 You are a medical expert acting as a "verifier" in a multi-stage system designed to analyze medical imaging reports.
 
-In a previous step, a "LLM" acting as a "case identifier" analyzed a clinical report and attempted to answer a specific clinical question.
+Your ONLY task is to verify whether a previous LLM's judgment was CORRECT or INCORRECT. You must NOT make your own medical judgment about Present/Absent/Uncertain.
 
-The LLM extracted a sentence from the report and assigned a label (Present / Absent / Uncertain) to indicate whether the condition in question was present, absent, or uncertain in that sentence.
+In a previous step, a "case identifier" LLM analyzed a clinical report and provided:
+- Label assigned: "{opinion}" (Present / Absent / Uncertain)  
+- Extracted sentence: "{sentence}"
 
-The label was assigned according to the following guideline:
-If the sentence clearly supports the presence of the condition as currently active or ongoing, then the case identifier returns: "Present"
+Context for interpretation: {context}
+Clinical question: {question}
+Clinical report: {text}
 
-If the sentence clearly supports the absence of the condition currently, or describes the condition only as past history/resolved condition, or if no relevant information is found, then the case identifier returns: "Absent"
+The case identifier was supposed to follow these guidelines:
+- "Present": Condition is explicitly reported as currently present/active
+- "Absent": Condition is clearly not present currently, or only mentioned as past history/resolved, or no relevant information found
+- "Uncertain": Condition's presence is unclear, ambiguous, uses tentative language (e.g., "possible," "suspected," "rule out"), or insufficient clarity
 
-If the condition's presence is unclear, ambiguous, contains tentative language (e.g., "possible," "rule out," "suspected"), or cannot be determined from the available information, then the case identifier returns: "Uncertain"
+Your verification task:
+1. Check if the extracted sentence actually supports the assigned label
+2. Determine if the case identifier's judgment was reasonable given the sentence and context
 
-You will receive the following input:
+IMPORTANT: You must ONLY return "correct" or "incorrect" in the is_correct field. Do NOT return "uncertain" or any other value.
 
-- Context for interpretation: {context}
+If the judgment seems reasonable (even if you might have chosen differently), mark it as "correct".
+Only mark as "incorrect" if there's a clear error (e.g., "Present" assigned to clearly absent condition, or completely wrong sentence extraction).
 
----------------------------------------------------------------------------
-
-- A clinical question: {question}
-
----------------------------------------------------------------------------
-
-- A clinical report: {text}
-
----------------------------------------------------------------------------
-
-- A LLM (case identifier)'s decision, including:
-    - Label assigned: "{opinion}" (Present / Absent / Uncertain)
-    - Extracted sentence: "{sentence}"
-
-Your task is to independently verify the correctness of the LLM's label based on the extracted sentence and the context.
-Then, compare it with the label assigned by the case identifier (LLM).
-
-Special considerations:
-
-- Only accept "Present" if the evidence is clear that the condition is currently present. Past, resolved, or historical references should not be labeled as present unless specifically described as ongoing.
-- Accept "Absent" only when the condition is clearly stated as not present currently, mentioned only as past history/resolved, or when no relevant information exists.
-- Accept "Uncertain" when the sentence contains ambiguous language, tentative expressions (e.g., "possible," "suspected," "rule out"), conflicting information, or insufficient clarity for a definitive determination.
-- If the extracted sentence is "No relevant sentence found", this should typically be labeled as "Absent" unless there are other contextual factors suggesting uncertainty.
-
-If you determine the answer is incorrect, provide a concise reason and a concrete correction_hint that will help the case identifier revise its answer and avoid the same mistake.
-
-Return your response in the following JSON format:
+Return your response in this exact JSON format:
 {{
 "is_correct": "correct" or "incorrect",
-"reason": "[If incorrect, briefly state why the answer was incorrect. If correct, you may leave this empty or state 'Answer is appropriate.']",
-"correction_hint": "[If incorrect, provide a clear, actionable instruction for improvement. If correct, leave this field empty.]"
+"reason": "[If incorrect, briefly explain why. If correct, leave empty or write 'Answer is appropriate.']",
+"correction_hint": "[If incorrect, provide specific guidance. If correct, leave empty.]"
 }}
 """
 # ----------------------------------------------------------------------------------------------------------
@@ -127,19 +110,51 @@ def verify_with_openai(text: str, question: str, context: str, inference_result:
             if json_start != -1 and json_end != -1:
                 json_str = verification_result[json_start:json_end]
                 result = safe_json_loads(json_str)
+                
                 # Validate result
-                if "is_correct" in result:
-                    logger.info(f"Verification completed: opinion - {opinion}, Verification result - {result['is_correct']}")
+                if result and "is_correct" in result:
+                    # is_correct 값을 안전하게 파싱
+                    is_correct_value = str(result.get("is_correct", "correct")).lower().strip()
+                    
+                    # 명시적으로 올바른 값들만 처리
+                    if is_correct_value in ["correct", "true", "yes"]:
+                        is_correct = True
+                    elif is_correct_value in ["incorrect", "false", "no"]:
+                        is_correct = False
+                    else:
+                        # 예상하지 못한 값이 오면 로그 출력하고 기본값 사용
+                        logger.warning(f"Unexpected is_correct value: '{is_correct_value}', defaulting to True")
+                        is_correct = True
+                    
+                    logger.info(f"Verification completed: opinion - {opinion}, Verification result - {is_correct}")
                     # 전체 피드백 객체 반환
                     return {
-                        "is_correct": result.get("is_correct", "correct").lower() == "correct",
+                        "is_correct": is_correct,
                         "reason": result.get("reason", ""),
                         "correction_hint": result.get("correction_hint", ""),
                         "raw_response": verification_result
                     }
+                else:
+                    # JSON 파싱은 성공했지만 is_correct 필드가 없는 경우
+                    logger.warning(f"Missing is_correct field in verifier response: {result}")
+                    return {
+                        "is_correct": True,  # 기본값으로 올바름으로 간주
+                        "reason": "응답에 is_correct 필드 없음",
+                        "correction_hint": "",
+                        "raw_response": verification_result
+                    }
+            else:
+                logger.warning(f"No JSON found in verifier response: {verification_result}")
+                return {
+                    "is_correct": True,  # JSON이 없으면 기본값으로 올바름으로 간주
+                    "reason": "JSON 응답 형식 오류",
+                    "correction_hint": "",
+                    "raw_response": verification_result
+                }
                
         except Exception as e:
             logger.error(f"JSON processing error: {e}")
+            logger.error(f"Raw verifier response: {verification_result}")
             return {
                 "is_correct": True,  # 기본값으로 올바름으로 간주
                 "reason": "JSON 파싱 오류",
@@ -231,18 +246,49 @@ def verify_with_local_model(text: str, question: str, context: str, inference_re
                 result = safe_json_loads(json_str)
                 # print('verify result2',result)
                 # Validate result
-                if "is_correct" in result:
-                    logger.info(f"Verification completed: opinion - {opinion}, Verification result - {result['is_correct']}")
+                if result and "is_correct" in result:
+                    # is_correct 값을 안전하게 파싱
+                    is_correct_value = str(result.get("is_correct", "correct")).lower().strip()
+                    
+                    # 명시적으로 올바른 값들만 처리
+                    if is_correct_value in ["correct", "true", "yes"]:
+                        is_correct = True
+                    elif is_correct_value in ["incorrect", "false", "no"]:
+                        is_correct = False
+                    else:
+                        # 예상하지 못한 값이 오면 로그 출력하고 기본값 사용
+                        logger.warning(f"Unexpected is_correct value: '{is_correct_value}', defaulting to True")
+                        is_correct = True
+                    
+                    logger.info(f"Verification completed: opinion - {opinion}, Verification result - {is_correct}")
                     # 전체 피드백 객체 반환
                     return {
-                        "is_correct": result.get("is_correct", "correct").lower() == "correct",
+                        "is_correct": is_correct,
                         "reason": result.get("reason", ""),
                         "correction_hint": result.get("correction_hint", ""),
                         "raw_response": output_text
                     }
+                else:
+                    # JSON 파싱은 성공했지만 is_correct 필드가 없는 경우
+                    logger.warning(f"Missing is_correct field in verifier response: {result}")
+                    return {
+                        "is_correct": True,  # 기본값으로 올바름으로 간주
+                        "reason": "응답에 is_correct 필드 없음",
+                        "correction_hint": "",
+                        "raw_response": output_text
+                    }
+            else:
+                logger.warning(f"No JSON found in verifier response: {output_text}")
+                return {
+                    "is_correct": True,  # JSON이 없으면 기본값으로 올바름으로 간주
+                    "reason": "JSON 응답 형식 오류", 
+                    "correction_hint": "",
+                    "raw_response": output_text
+                }
                
         except Exception as e:
             logger.error(f"JSON processing error: {e}")
+            logger.error(f"Raw verifier response: {output_text}")
             return {
                 "is_correct": True,  # 기본값으로 올바름으로 간주
                 "reason": "JSON 파싱 오류",
