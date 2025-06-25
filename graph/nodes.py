@@ -18,13 +18,19 @@ def inference_single_text(state: SingleTextState) -> SingleTextState:
     try:
         logger.info(f"추론 시작 - 시도 {state['retry_count'] + 1}/{state['max_retries']}")
         
-        # LLM 추론 실행
+        # verifier 피드백이 있는지 확인하고 로그 출력
+        verifier_feedback = state.get("verifier_feedback")
+        if verifier_feedback and not verifier_feedback.get("is_correct", True):
+            logger.info("이전 verifier 피드백을 사용하여 추론 재시도")
+        
+        # LLM 추론 실행 (verifier 피드백 포함)
         result = inference_llm(
             state["text"], 
             state["context"], 
             state["question"],
             llm_type=state["llm_type"],
-            temperature=state["temperature"]
+            temperature=state["temperature"],
+            verifier_feedback=verifier_feedback
         )
         
         # 결과 검증 - 필수 키가 있는지 확인
@@ -135,13 +141,13 @@ def validate_case_node(state: SingleTextState) -> SingleTextState:
                 "error": "추론 결과 불완전"
             }
         
-        # 케이스 검증 실행 (의견 검증)
+        # 케이스 검증 실행 (의견 검증) - 이제 전체 피드백 객체 반환
         result = {
             "sentence": sentence,
             "opinion": opinion
         }
         
-        verified_opinion = verify_opinion(
+        verifier_result = verify_opinion(
             state["text"], 
             state["question"], 
             state["context"],
@@ -150,19 +156,24 @@ def validate_case_node(state: SingleTextState) -> SingleTextState:
             temperature=state["temperature"]
         )
         
-        if verified_opinion:
+        # verifier 결과에서 is_correct 확인
+        is_correct = verifier_result.get("is_correct", True)
+        
+        if is_correct:
             logger.info("케이스 검증 성공 - 처리 완료")
             return {
                 **state,
                 "verified_opinion": True,
+                "verifier_feedback": verifier_result,  # 피드백 저장
                 "current_step": "completed",
                 "error": None
             }
         else:
-            logger.info("케이스 검증 실패 - 재시도 필요")
+            logger.info(f"케이스 검증 실패 - 재시도 필요. 피드백: {verifier_result.get('reason', 'N/A')}")
             return {
                 **state,
                 "verified_opinion": False,
+                "verifier_feedback": verifier_result,  # 피드백 저장
                 "current_step": "inference",
                 "retry_count": state["retry_count"] + 1,
                 "error": None  # 검증 실패는 오류가 아님
@@ -400,6 +411,9 @@ def process_all_texts(state: FilterState) -> FilterState:
             )
             
             try:
+                # 서브그래프 실행
+                sub_result = single_text_subgraph.invoke(sub_input)
+                
                 # 결과 변환
                 result = {
                     "sentence": sub_result.get("sentence", ""),
@@ -407,7 +421,8 @@ def process_all_texts(state: FilterState) -> FilterState:
                     "verified_sentence": sub_result.get("verified_sentence", False),
                     "verified_opinion": sub_result.get("verified_opinion", None),
                     "retry_count": sub_result.get("retry_count", 0),
-                    "error": sub_result.get("error", None)
+                    "error": sub_result.get("error", None),
+                    "verifier_feedback": sub_result.get("verifier_feedback", None)  # 피드백도 포함
                 }
                 
             except Exception as sub_error:

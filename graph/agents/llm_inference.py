@@ -23,13 +23,13 @@ Below is the context for analyzing the report:
 
 You are given a clinical report and a clinical condition as context. Perform the following two tasks:
 
-1. From the report, extract the single most relevant sentence that directly addresses the **current** presence or absence (including uncertainty) of the condition described in the context. Only consider statements describing the patient's present status; do not consider historical, past, or resolved findings as present unless they are explicitly stated as ongoing or currently active. Consider the overall context of the report to avoid relying on protocol descriptions or general instructions unless they directly refer to the patient’s current clinical findings.
+1. From the report, extract the single most relevant sentence that directly addresses the **current** presence or absence (including uncertainty) of the condition described in the context. Only consider statements describing the patient's present status; do not consider historical, past, or resolved findings as present unless they are explicitly stated as ongoing or currently active. Consider the overall context of the report to avoid relying on protocol descriptions or general instructions unless they directly refer to the patient's current clinical findings.
     - If there is no sentence that directly addresses the presence or absence of the condition, set the value of "sentence" to "No relevant sentence found."
 2. Based on that sentence and the full context of the report, categorize the report into one of the following categories:
     - "Present": The condition is explicitly reported as being present in the current clinical context.
     - "Absent": The condition is reported as not being present, or is only mentioned as a possibility, history, or in hypothetical/protocol language (e.g., "rule out," "possible," "history of," etc.), or there is no relevant information.
 
-If feedback from the verifier is provided indicating your previous answer was incorrect, carefully review the correction_hint and revise your answer accordingly. Ensure the revised answer avoids the same mistake.
+IMPORTANT: If verifier feedback is provided above indicating that your previous answer was incorrect, you MUST carefully review the feedback and revise your answer accordingly. Pay special attention to the correction hint and ensure your revised answer directly addresses the identified issue.
 
 Your response must strictly follow the JSON format below:
 
@@ -39,6 +39,41 @@ Your response must strictly follow the JSON format below:
 }}
 """
 # ----------------------------------------------------------------------------------------------------------
+
+def format_verifier_feedback(verifier_feedback: Optional[Dict[str, Any]]) -> str:
+    """
+    verifier 피드백을 프롬프트에 포함할 수 있는 형태로 포매팅합니다.
+    
+    Args:
+        verifier_feedback (Optional[Dict[str, Any]]): verifier의 피드백 객체
+        
+    Returns:
+        str: 포매팅된 피드백 텍스트 (공란이거나 피드백 내용)
+    """
+    if not verifier_feedback:
+        return ""
+    
+    # verifier가 올바르다고 판단했거나 피드백이 없는 경우
+    if verifier_feedback.get("is_correct", True):
+        return ""
+    
+    # verifier가 틀렸다고 판단한 경우 피드백 포함
+    reason = verifier_feedback.get("reason", "").strip()
+    correction_hint = verifier_feedback.get("correction_hint", "").strip()
+    
+    feedback_parts = []
+    feedback_parts.append("**VERIFIER FEEDBACK - Previous Answer Correction Required:**")
+    
+    if reason:
+        feedback_parts.append(f"**Reason for correction:** {reason}")
+    
+    if correction_hint:
+        feedback_parts.append(f"**Correction hint:** {correction_hint}")
+    
+    feedback_parts.append("**Please revise your answer based on this feedback.**")
+    feedback_parts.append("")  # 빈 줄 추가
+    
+    return "\n".join(feedback_parts)
 
 logger = logging.getLogger(__name__)
 # OpenAI API key setup
@@ -57,19 +92,25 @@ DO_SAMPLE = True
 
 
 @timeit
-def infer_with_openai(text: str, context: str, question: str, temperature:float, verifier_feedback:str) -> Dict[str, Any]:
+def infer_with_openai(text: str, context: str, question: str, temperature:float, verifier_feedback: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Perform LLM inference using OpenAI.
     
     Args:
         text (str): Report text to analyze
         context (str): Context for analysis
+        question (str): User question
+        temperature (float): Temperature setting
+        verifier_feedback (Optional[Dict[str, Any]]): Verifier feedback object
         
     Returns:
         Dict[str, Any]: Inference result (sentence, opinion)
     """
     try:
         config = get_config()
+        
+        # verifier 피드백 포매팅
+        verifier_feedback_section = format_verifier_feedback(verifier_feedback)
         
         response = client.chat.completions.create(
             model=config.llm_config.openai_model_name,
@@ -79,7 +120,7 @@ def infer_with_openai(text: str, context: str, question: str, temperature:float,
                     text=text,
                     question=question,
                     context=context,
-                    verifier_feedback_section = verifier_feedback
+                    verifier_feedback_section=verifier_feedback_section
                 )}
             ],
             temperature=temperature,
@@ -132,13 +173,16 @@ def infer_with_openai(text: str, context: str, question: str, temperature:float,
         }
 
 @timeit
-def infer_with_local_model(text: str, context: str, question: str, temperature:float, verifier_feedback:str) -> Dict[str, Any]:
+def infer_with_local_model(text: str, context: str, question: str, temperature:float, verifier_feedback: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Perform LLM inference using local model.
     
     Args:
         text (str): Report text to analyze
         context (str): Context for analysis
+        question (str): User question
+        temperature (float): Temperature setting
+        verifier_feedback (Optional[Dict[str, Any]]): Verifier feedback object
         
     Returns:
         Dict[str, Any]: Inference result (sentence, opinion)
@@ -147,8 +191,16 @@ def infer_with_local_model(text: str, context: str, question: str, temperature:f
     model, tokenizer = get_loaded_model()
     
     try:
+        # verifier 피드백 포매팅
+        verifier_feedback_section = format_verifier_feedback(verifier_feedback)
+        
         # Generate prompt
-        prompt = ANALYSIS_PROMPT_TEMPLATE.format(text=text, context=context, question=question, verifier_feedback_section = verifier_feedback)
+        prompt = ANALYSIS_PROMPT_TEMPLATE.format(
+            text=text, 
+            context=context, 
+            question=question, 
+            verifier_feedback_section=verifier_feedback_section
+        )
         # print("ANALYSIS_PROMPT_TEMPLATE",prompt)
         # Tokenize and infer
         
@@ -226,14 +278,17 @@ def infer_with_local_model(text: str, context: str, question: str, temperature:f
         }
         
 @timeit
-def inference_llm(text: str, context: str, question: str, llm_type: Literal["local", "openai"], temperature: float, verifier_feedback:str) -> Dict[str, Any]:
+def inference_llm(text: str, context: str, question: str, llm_type: Literal["local", "openai"], temperature: float, verifier_feedback: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Perform LLM inference on a single text with selected LLM type.
     
     Args:
         text (str): Report text to analyze
         context (str): Context for analysis
+        question (str): User question  
         llm_type (str): LLM type to use ("local" or "openai")
+        temperature (float): Temperature setting
+        verifier_feedback (Optional[Dict[str, Any]]): Verifier feedback object
         
     Returns:
         Dict[str, Any]: Inference result (sentence, opinion)

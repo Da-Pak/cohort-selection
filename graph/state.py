@@ -44,6 +44,10 @@ class SingleTextState(TypedDict):
     verified_sentence: Optional[bool]
     verified_opinion: Optional[bool]
     
+    # verifier 피드백 관련 필드 추가
+    verifier_feedback: Optional[Dict[str, Any]]  # verifier의 전체 피드백 객체
+    verifier_feedback_text: Optional[str]  # 포매팅된 피드백 텍스트
+    
     # 루프 제어
     retry_count: int
     max_retries: int
@@ -95,6 +99,10 @@ def get_initial_single_text_state(text: str, context: str, question: str, temper
         opinion=None,
         verified_sentence=None,
         verified_opinion=None,
+        
+        # verifier 피드백 관련 필드 초기화
+        verifier_feedback=None,
+        verifier_feedback_text="",
         
         # 루프 제어
         retry_count=0,

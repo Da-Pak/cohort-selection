@@ -75,17 +75,19 @@ DO_SAMPLE = True
 # @cached(cache=VERIFIER_CACHE, key=lambda text, question, context, inference_result, **kwargs: 
 #           (text, question, context, tuple(sorted(inference_result.items()))))
 @timeit
-def verify_with_openai(text: str, question: str, context: str, inference_result: Dict[str, Any], temperature: float) -> bool:
+def verify_with_openai(text: str, question: str, context: str, inference_result: Dict[str, Any], temperature: float) -> Dict[str, Any]:
     """
     Verify the LLM's judgment using OpenAI.
     
     Args:
         text (str): Original report text
         question (str): User question
+        context (str): Context for analysis
         inference_result (Dict[str, Any]): LLM's inference result (sentence, opinion)
+        temperature (float): Temperature setting
         
     Returns:
-        bool: Verification result (True: valid, False: invalid)
+        Dict[str, Any]: Verification result with feedback information
     """
     try:
         # Extract inference results
@@ -114,7 +116,7 @@ def verify_with_openai(text: str, question: str, context: str, inference_result:
         )
         
         # Extract verification result from response
-        verification_result = response.choices[0].message.content.strip().lower()
+        verification_result = response.choices[0].message.content.strip()
         try:
             # Find JSON part
             json_start = verification_result.find("{")
@@ -124,37 +126,50 @@ def verify_with_openai(text: str, question: str, context: str, inference_result:
                 result = safe_json_loads(json_str)
                 # Validate result
                 if "is_correct" in result:
-                    # Normalize opinion value
-                    is_valid = result["is_correct"]
-                    logger.info(f"Verification completed: opinion - {opinion}, Verification result - {is_valid}")
-                    return is_valid
+                    logger.info(f"Verification completed: opinion - {opinion}, Verification result - {result['is_correct']}")
+                    # 전체 피드백 객체 반환
+                    return {
+                        "is_correct": result.get("is_correct", "correct").lower() == "correct",
+                        "reason": result.get("reason", ""),
+                        "correction_hint": result.get("correction_hint", ""),
+                        "raw_response": verification_result
+                    }
                
         except Exception as e:
             logger.error(f"JSON processing error: {e}")
             return {
-                "sentence": "",
-                "opinion": "Uncertain"
+                "is_correct": True,  # 기본값으로 올바름으로 간주
+                "reason": "JSON 파싱 오류",
+                "correction_hint": "",
+                "raw_response": verification_result
             }
         
     except Exception as e:
         logger.error(f"Error during verification: {e}")
         # Return default value (True) on error
-        return True
+        return {
+            "is_correct": True,
+            "reason": f"검증 중 오류 발생: {str(e)}",
+            "correction_hint": "",
+            "raw_response": ""
+        }
 
 # @cached(cache=VERIFIER_CACHE, key=lambda text, question, context, inference_result, **kwargs: 
 #           (text, question, context, tuple(sorted(inference_result.items()))))
 @timeit
-def verify_with_local_model(text: str, question: str, context: str, inference_result: Dict[str, Any], temperature: float) -> bool:
+def verify_with_local_model(text: str, question: str, context: str, inference_result: Dict[str, Any], temperature: float) -> Dict[str, Any]:
     """
     Verify the LLM's judgment using local model.
     
     Args:
         text (str): Original report text
         question (str): User question
+        context (str): Context for analysis
         inference_result (Dict[str, Any]): LLM's inference result (sentence, opinion)
+        temperature (float): Temperature setting
         
     Returns:
-        bool: Verification result (True: valid, False: invalid)
+        Dict[str, Any]: Verification result with feedback information
     """
     # 수정된 부분: utils.py에서 제공하는 함수 사용
     model, tokenizer = get_loaded_model()
@@ -214,35 +229,51 @@ def verify_with_local_model(text: str, question: str, context: str, inference_re
                 # print('verify result2',result)
                 # Validate result
                 if "is_correct" in result:
-                    # Normalize opinion value
-                    is_valid = result["is_correct"]
-                    logger.info(f"Verification completed: opinion - {opinion}, Verification result - {is_valid}")
-                    return is_valid
+                    logger.info(f"Verification completed: opinion - {opinion}, Verification result - {result['is_correct']}")
+                    # 전체 피드백 객체 반환
+                    return {
+                        "is_correct": result.get("is_correct", "correct").lower() == "correct",
+                        "reason": result.get("reason", ""),
+                        "correction_hint": result.get("correction_hint", ""),
+                        "raw_response": output_text
+                    }
                
         except Exception as e:
             logger.error(f"JSON processing error: {e}")
-            return None
+            return {
+                "is_correct": True,  # 기본값으로 올바름으로 간주
+                "reason": "JSON 파싱 오류",
+                "correction_hint": "",
+                "raw_response": output_text
+            }
         
     except Exception as e:
         logger.error(f"Error during verification: {e}")
         # Return default value (True) on error
-        return None
+        return {
+            "is_correct": True,
+            "reason": f"검증 중 오류 발생: {str(e)}",
+            "correction_hint": "",
+            "raw_response": ""
+        }
 
 # @cached(cache=VERIFIER_CACHE, key=lambda text, question, context, inference_result, **kwargs: 
 #           (text, question, context, tuple(sorted(inference_result.items()))))
 @timeit
-def verify_opinion(text: str, question: str, context: str, inference_result: Dict[str, Any], llm_type: Literal["local", "openai"], temperature: float) -> bool:
+def verify_opinion(text: str, question: str, context: str, inference_result: Dict[str, Any], llm_type: Literal["local", "openai"], temperature: float) -> Dict[str, Any]:
     """
     Verify the LLM's judgment with selected LLM type.
     
     Args:
         text (str): Original report text
         question (str): User question
+        context (str): Context for analysis
         inference_result (Dict[str, Any]): LLM's inference result (sentence, opinion)
         llm_type (str): LLM type to use for verification ("local" or "openai")
+        temperature (float): Temperature setting
         
     Returns:
-        bool: Verification result (True: valid, False: invalid)
+        Dict[str, Any]: Verification result with feedback information
     """
     try:
         # 기본 타임아웃 설정
@@ -257,17 +288,20 @@ def verify_opinion(text: str, question: str, context: str, inference_result: Dic
             result = verify_with_local_model(text, question, context, inference_result, temperature)
         else:
             result = verify_with_openai(text, question, context, inference_result, temperature)
-        # print('verify result', result)
+        
         # 타임아웃 체크
-        if result in [True, 'True','true']:
-            result = True
-        else:
-            result = False
         elapsed_time = time.time() - start_time
         if elapsed_time > timeout_seconds:
             logger.warning(f"Verification took too long: {elapsed_time:.2f} seconds")
+            
         return result
+        
     except Exception as e:
         logger.error(f"Error in verify_opinion: {str(e)}")
         # 오류 발생 시 기본값 반환 (검증은 기본적으로 성공으로 간주)
-        return True
+        return {
+            "is_correct": True,
+            "reason": f"verify_opinion 오류: {str(e)}",
+            "correction_hint": "",
+            "raw_response": ""
+        }
