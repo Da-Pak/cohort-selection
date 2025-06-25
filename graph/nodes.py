@@ -400,6 +400,7 @@ def process_all_texts(state: FilterState) -> FilterState:
             )
             
             try:
+                sub_result = single_text_subgraph.invoke(sub_input)
                 # 결과 변환
                 result = {
                     "sentence": sub_result.get("sentence", ""),
@@ -460,6 +461,7 @@ def finalize_results(state: FilterState) -> FilterState:
         result_df["sentence"] = [result.get("sentence", "") for result in results]
         result_df["opinion"] = [result.get("opinion", "Uncertain") for result in results]
         result_df["verified_sentence"] = [result.get("verified_sentence", False) for result in results]
+        result_df["retry_count"] = [result.get("retry_count", 0) for result in results]
         
         if config.use_gpt_verification:
             result_df["verified_opinion"] = [result.get("verified_opinion", None) for result in results]

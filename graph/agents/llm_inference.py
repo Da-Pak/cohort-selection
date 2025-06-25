@@ -8,26 +8,34 @@ from ...utils import timeit, safe_json_loads, get_config, get_loaded_model, is_m
 import time
 
 # ----------------------------------------------------------------------------------------------------------
-ANALYSIS_PROMPT_TEMPLATE = """ <Medical Report Analysis Task> The following is a medical report text: 
+ANALYSIS_PROMPT_TEMPLATE = """ <Medical Report Analysis Task>
+
+The following is a medical report text:
 {text}
-The following is the user question: 
+
+The following is the user question:
 {question}
-Below is the context for analyzing the report: 
+
+Below is the context for analyzing the report:
 {context}
+
+
 You are given a clinical report and a clinical condition as context. Perform the following two tasks:
 
-1. From the report, extract the single most relevant sentence that directly addresses the presence, absence, or uncertainty of the condition described in the context.
-2. Based on that sentence, categorize the report into one of the following categories:
-   - "Present": The condition is clearly reported as being present.
-   - "Absent": The condition is clearly reported as not being present.
-   - "Uncertain": The condition is mentioned with ambiguous, tentative, or hypothetical language (e.g., "rule out," "possible", etc.).
+1. From the report, extract the single most relevant sentence that directly addresses the **current** presence or absence (including uncertainty) of the condition described in the context. Only consider statements describing the patient's present status; do not consider historical, past, or resolved findings as present unless they are explicitly stated as ongoing or currently active. Consider the overall context of the report to avoid relying on protocol descriptions or general instructions unless they directly refer to the patient’s current clinical findings.
+    - If there is no sentence that directly addresses the presence or absence of the condition, set the value of "sentence" to "No relevant sentence found."
+2. Based on that sentence and the full context of the report, categorize the report into one of the following categories:
+    - "Present": The condition is explicitly reported as being present in the current clinical context.
+    - "Absent": The condition is reported as not being present, or is only mentioned as a possibility, history, or in hypothetical/protocol language (e.g., "rule out," "possible," "history of," etc.), or there is no relevant information.
+
+If feedback from the verifier is provided indicating your previous answer was incorrect, carefully review the correction_hint and revise your answer accordingly. Ensure the revised answer avoids the same mistake.
 
 Your response must strictly follow the JSON format below:
 
-{{ 
-"sentence": "The sentence that serves as the basis for your judgment", 
-"opinion": "Present or Absent or Uncertain"
-}} 
+{{
+"sentence": "The sentence that serves as the basis for your judgment, or 'No relevant sentence found'",
+"opinion": "Present or Absent"
+}}
 """
 # ----------------------------------------------------------------------------------------------------------
 
@@ -138,7 +146,7 @@ def infer_with_local_model(text: str, context: str, question: str, temperature:f
     
     try:
         # Generate prompt
-        prompt = ANALYSIS_PROMPT_TEMPLATE.format(text=text, context=context, question=question)
+        prompt = ANALYSIS_PROMPT_TEMPLATE.format(text=text, context=context, question=question, verifier_feedback_section = verifier_feedback)
         # print("ANALYSIS_PROMPT_TEMPLATE",prompt)
         # Tokenize and infer
         

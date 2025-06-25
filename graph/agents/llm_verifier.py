@@ -7,34 +7,48 @@ from cachetools import cached
 from ...utils import timeit, safe_json_loads, VERIFIER_CACHE, get_config, get_loaded_model, is_model_loaded
 import time
 # ----------------------------------------------------------------------------------------------------------
-VERIFIER_PROMPT_TEMPLATE = """ 
+VERIFIER_PROMPT_TEMPLATE = """
 You are a medical expert acting as a "verifier" in a multi-stage system designed to analyze medical imaging reports.
 
-In a previous step, a "LLM" acting as an "case identifier" analyzed a clinical report and attempted to answer a specific clinical question. 
+In a previous step, a "LLM" acting as a "case identifier" analyzed a clinical report and attempted to answer a specific clinical question.
 
-The LLM extracted a sentence from the report and assigned a label (Present / Absent / Uncertain) to indicate whether the condition in question was present, absent, or uncertain in that sentence.
+The LLM extracted a sentence from the report and assigned a label (Present / Absent) to indicate whether the condition in question was present or absent in that sentence.
 
 The label was assigned according to the following guideline:
-If the sentence clearly supports the presence of the condition, then the case identifier return: **Present**  
-If the sentence clearly supports the absence of the condition, then the case identifier return: **Absent**  
-If the sentence is ambiguous, hypothetical, or uses uncertain language (e.g., "possible,"r/o"), then the case identifier return: **Uncertain**
+If the sentence clearly supports the presence of the condition as currently active or ongoing, then the case identifier returns: "Present"
+
+If the sentence clearly supports the absence of the condition, describes the condition as only a possibility, history, hypothetical, protocol description, or if no relevant sentence is found, then the case identifier returns: "Absent"
 
 You will receive the following input:
-- A clinical report: {text}
-- A clinical question: {question}
+
 - Context for interpretation: {context}
+
+------------------------------------------------------------------------
+
+- A clinical question: {question}
+
+------------------------------------------------------------------------
+
+- A clinical report: {text}
+
+------------------------------------------------------------------------
+
 - A LLM (case identifier)'s decision, including:
-  - Extracted sentence: "{sentence}"
-  - Label assigned: "{opinion}" (Present / Absent / Uncertain)
+    - Label assigned: "{opinion}" (Present / Absent)
+    - Extracted sentence: "{sentence}"
 
 Your task is to independently verify the correctness of the LLM's label based on the extracted sentence and the context.
 Then, compare it with the label assigned by the case identifier (LLM).
 
-If the LLM's label matches your judgment, return `true`. If not, return `false`.
+Special considerations:
 
-Your response must strictly follow the JSON format below:
+- Only accept "Present" if the evidence is clear that the condition is currently present. Past, resolved, or historical references should not be labeled as present unless specifically described as ongoing.
+- If the extracted sentence is a protocol description, general instruction, or does not directly reference the patient's current clinical findings, it should not be considered valid as evidence of presence.
+- If the extracted sentence is "No relevant sentence found", accept this as appropriate if no direct evidence exists in the report.
+
+Return your response in the following JSON format:
 {{
-  "is_correct": True or False 
+"is_correct": "correct" or "incorrect",
 }}
 """
 # ----------------------------------------------------------------------------------------------------------
@@ -105,9 +119,12 @@ def verify_with_openai(text: str, question: str, context: str, inference_result:
                 json_str = verification_result[json_start:json_end]
                 result = safe_json_loads(json_str)
                 # Validate result
+                print('result',result)
                 if "is_correct" in result:
-                    # Normalize opinion value
-                    is_valid = result["is_correct"]
+                    if result in ['correct', 'true','True', True, 'Correct','CORRECT']:
+                        is_valid = True
+                    else:
+                        is_valid = False
                     logger.info(f"Verification completed: opinion - {opinion}, Verification result - {is_valid}")
                     return is_valid
                
@@ -168,7 +185,7 @@ def verify_with_local_model(text: str, question: str, context: str, inference_re
             )
         inputs = tokenizer(input_prompt, return_tensors="pt").to(DEVICE)
         logger.info(f"Verification input length : {len(inputs.input_ids[0])}")
-        # print("VERIFIER_PROMPT_TEMPLATE",prompt)
+        print("VERIFIER_PROMPT_TEMPLATE",prompt)
         # Tokenize and infer
         # inputs = tokenizer(prompt, return_tensors="pt").to(DEVICE)
         # Generate
@@ -193,11 +210,14 @@ def verify_with_local_model(text: str, question: str, context: str, inference_re
             if json_start != -1 and json_end != -1:
                 json_str = output_text[json_start:json_end]
                 result = safe_json_loads(json_str)
+                print('result',result)
                 # print('verify result2',result)
                 # Validate result
                 if "is_correct" in result:
-                    # Normalize opinion value
-                    is_valid = result["is_correct"]
+                    if result['is_correct'] in ['correct', 'true','True', True, 'Correct','CORRECT']:
+                        is_valid = True
+                    else:
+                        is_valid = False
                     logger.info(f"Verification completed: opinion - {opinion}, Verification result - {is_valid}")
                     return is_valid
                
@@ -234,17 +254,12 @@ def verify_opinion(text: str, question: str, context: str, inference_result: Dic
         
         # 시간 제한을 두고 검증 실행
         start_time = time.time()
-        
         if llm_type == "local":
             result = verify_with_local_model(text, question, context, inference_result, temperature)
         else:
             result = verify_with_openai(text, question, context, inference_result, temperature)
-        # print('verify result', result)
-        # 타임아웃 체크
-        if result in [True, 'True','true']:
-            result = True
-        else:
-            result = False
+        print('verify result', result)
+
         elapsed_time = time.time() - start_time
         if elapsed_time > timeout_seconds:
             logger.warning(f"Verification took too long: {elapsed_time:.2f} seconds")

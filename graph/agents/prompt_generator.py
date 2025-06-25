@@ -25,14 +25,14 @@ Given a user's medical question: "{question}", your structured thought process m
 - Clearly describe typical clinical signs, diagnostic features, or radiologic findings that are critical for recognizing the targeted cases.
 4. Anticipate language used in medical records that indicates case relevance
 - Specify typical words, phrases, or sentence patterns clinicians commonly use in radiology or medical reports to describe the clinical condition relevant for case selection.
-5. Step-by-step reasoning for inclusion criteria (case-positive identification)
+5. Step-by-step reasoning for present criteria (case-positive identification)
 - Explicitly list phrases or report content that strongly indicate the medical record meets the diagnostic criteria for case selection.
-- Provide a logical explanation for each identified inclusion criterion.
+- Provide a logical explanation for each identified absent criterion.
 6. Step-by-step reasoning for exclusion criteria (case-negative identification)
 - Explicitly list phrases or report content that clearly indicate the medical record does not meet the criteria and should be excluded from selection.
 - Provide a logical explanation for each identified exclusion criterion.
 7. Synthesize into a clear, actionable context for clinical case selection
-- Integrate definitions, inclusion/exclusion criteria, and instructions in a clear and concise manner specifically tailored to facilitate accurate and efficient clinical case filtering and selection by an LLM.
+- Integrate definitions, present/absent criteria, and instructions in a clear and concise manner specifically tailored to facilitate accurate and efficient clinical case filtering and selection by an LLM.
 The resulting context will directly guide the LLM in accurately identifying and selecting relevant cases from each medical report.
 """
 # ----------------------------------------------------------------------------------------------------------
@@ -79,7 +79,7 @@ def generate_context(question: str, temperature: float) -> str:
         
         Analyze the reports according to the following steps:
         1. Look for keywords or sentences related to the question in the text.
-        2. If related content is clearly mentioned, classify as "INCLUDE".
-        3. If related content is clearly negated or absent, classify as "EXCLUDE".
-        4. If judgment is difficult, classify as "UNCERTAIN".
+        2. If related content is clearly mentioned, classify as "Present".
+        3. If related content is clearly negated or absent, classify as "Absent".
+        4. If judgment is difficult, classify as "Uncertain".
         """
