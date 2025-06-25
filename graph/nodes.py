@@ -428,12 +428,13 @@ def process_all_texts(state: FilterState) -> FilterState:
             except Exception as sub_error:
                 logger.error(f"서브그래프 실행 중 오류 발생: {sub_error}")
                 result = {
-                    "sentence": None,
-                    "opinion": None,
+                    "sentence": "Error during processing",
+                    "opinion": "Uncertain",  # 오류 발생 시 Uncertain으로 설정
                     "verified_sentence": False,
                     "verified_opinion": None,
                     "retry_count": 5,
-                    "error": str(sub_error)
+                    "error": str(sub_error),
+                    "verifier_feedback": None
                 }
             
             # 결과에 추가
@@ -478,11 +479,19 @@ def finalize_results(state: FilterState) -> FilterState:
         
         if config.use_gpt_verification:
             result_df["verified_opinion"] = [result.get("verified_opinion", None) for result in results]
-            # 최종 결정 (verified_opinion이 True이거나 None이면 opinion 사용, 그렇지 않으면 "Absent")
-            result_df["final_opinion"] = result_df.apply(
-                lambda row: row["opinion"] if row["verified_opinion"] == True else "Absent", 
-                axis=1
-            )
+            # 최종 결정 (verified_opinion이 True이면 opinion 사용, False이면 verifier 피드백 고려)
+            def determine_final_opinion(row):
+                if row["verified_opinion"] == True:
+                    return row["opinion"]
+                elif row["verified_opinion"] == False:
+                    # verifier가 틀렸다고 판단한 경우, 일단 Uncertain으로 처리
+                    # 추후 verifier 피드백을 더 정교하게 분석할 수 있음
+                    return "Uncertain"
+                else:
+                    # verified_opinion이 None인 경우 (검증하지 않았거나 오류)
+                    return row["opinion"]
+            
+            result_df["final_opinion"] = result_df.apply(determine_final_opinion, axis=1)
         else:
             result_df["final_opinion"] = result_df["opinion"]
         

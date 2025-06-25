@@ -27,7 +27,8 @@ You are given a clinical report and a clinical condition as context. Perform the
     - If there is no sentence that directly addresses the presence or absence of the condition, set the value of "sentence" to "No relevant sentence found."
 2. Based on that sentence and the full context of the report, categorize the report into one of the following categories:
     - "Present": The condition is explicitly reported as being present in the current clinical context.
-    - "Absent": The condition is reported as not being present, or is only mentioned as a possibility, history, or in hypothetical/protocol language (e.g., "rule out," "possible," "history of," etc.), or there is no relevant information.
+    - "Absent": The condition is clearly reported as not being present currently, or is mentioned only as past history/resolved condition, or there is no relevant information about the condition in the report.
+    - "Uncertain": The condition's presence is unclear, ambiguous, or cannot be determined from the available information. Use this when the report contains conflicting information, uses tentative language (e.g., "possible," "rule out," "suspected"), or when the extracted sentence does not provide sufficient clarity for a definitive Present/Absent determination.
 
 IMPORTANT: If verifier feedback is provided above indicating that your previous answer was incorrect, you MUST carefully review the feedback and revise your answer accordingly. Pay special attention to the correction hint and ensure your revised answer directly addresses the identified issue.
 
@@ -35,7 +36,7 @@ Your response must strictly follow the JSON format below:
 
 {{
 "sentence": "The sentence that serves as the basis for your judgment, or 'No relevant sentence found'",
-"opinion": "Present or Absent"
+"opinion": "Present or Absent or Uncertain"
 }}
 """
 # ----------------------------------------------------------------------------------------------------------
@@ -70,7 +71,7 @@ def format_verifier_feedback(verifier_feedback: Optional[Dict[str, Any]]) -> str
     if correction_hint:
         feedback_parts.append(f"**Correction hint:** {correction_hint}")
     
-    feedback_parts.append("**Please revise your answer based on this feedback.**")
+    feedback_parts.append("**Please revise your answer based on this feedback. Remember you can choose Present, Absent, or Uncertain.**")
     feedback_parts.append("")  # 빈 줄 추가
     
     return "\n".join(feedback_parts)
@@ -142,11 +143,15 @@ def infer_with_openai(text: str, context: str, question: str, temperature:float,
                 # Validate result
                 if "sentence" in result and "opinion" in result:
                     # Normalize opinion value
-                    if result["opinion"].lower() in ["present", "포함", "yes", "true"]:
+                    opinion_lower = result["opinion"].lower().strip()
+                    if opinion_lower in ["present", "포함", "yes", "true"]:
                         result["opinion"] = "Present"
-                    elif result["opinion"].lower() in ["absent", "제외", "no", "false"]:
+                    elif opinion_lower in ["absent", "제외", "no", "false"]:
                         result["opinion"] = "Absent"
+                    elif opinion_lower in ["uncertain", "unclear", "unknown", "ambiguous", "불확실", "모호", "애매"]:
+                        result["opinion"] = "Uncertain"
                     else:
+                        # 기본값을 Uncertain으로 설정
                         result["opinion"] = "Uncertain"
                     
                     return result
@@ -169,7 +174,7 @@ def infer_with_openai(text: str, context: str, question: str, temperature:float,
         logger.error(f"Error during OpenAI inference: {e}")
         return {
             "sentence": "",
-            "opinion": "UNCERTAIN"
+            "opinion": "Uncertain"
         }
 
 @timeit
@@ -246,11 +251,15 @@ def infer_with_local_model(text: str, context: str, question: str, temperature:f
                 # Validate result
                 if "sentence" in result and "opinion" in result:
                     # Normalize opinion value
-                    if result["opinion"].lower() in ["present", "포함", "yes", "true"]:
+                    opinion_lower = result["opinion"].lower().strip()
+                    if opinion_lower in ["present", "포함", "yes", "true"]:
                         result["opinion"] = "Present"
-                    elif result["opinion"].lower() in ["absent", "제외", "no", "false"]:
+                    elif opinion_lower in ["absent", "제외", "no", "false"]:
                         result["opinion"] = "Absent"
+                    elif opinion_lower in ["uncertain", "unclear", "unknown", "ambiguous", "불확실", "모호", "애매"]:
+                        result["opinion"] = "Uncertain"
                     else:
+                        # 기본값을 Uncertain으로 설정
                         result["opinion"] = "Uncertain"
                     
                     logger.info(f"opinion generation completed: Judgment - {result['opinion']}")
@@ -274,7 +283,7 @@ def infer_with_local_model(text: str, context: str, question: str, temperature:f
         logger.error(f"Error during inference: {e}")
         return {
             "sentence": "",
-            "opinion": "UNCERTAIN"
+            "opinion": "Uncertain"
         }
         
 @timeit
