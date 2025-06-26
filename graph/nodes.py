@@ -49,11 +49,21 @@ def inference_single_text(state: SingleTextState) -> SingleTextState:
                 "error": "추론 결과가 불완전함"
             }
         
+        # 첫 번째 시도인 경우 첫 번째 결과를 저장
+        first_sentence = state.get("first_sentence")
+        first_opinion = state.get("first_opinion")
+        if state["retry_count"] == 0:
+            first_sentence = sentence
+            first_opinion = opinion
+            logger.info(f"첫 번째 추론 결과 저장: {first_opinion}")
+        
         logger.info("추론 성공")
         return {
             **state,
             "sentence": sentence,
             "opinion": opinion,
+            "first_sentence": first_sentence,
+            "first_opinion": first_opinion,
             "current_step": "validate_sentence",
             "error": None
         }
@@ -418,6 +428,8 @@ def process_all_texts(state: FilterState) -> FilterState:
                 result = {
                     "sentence": sub_result.get("sentence", ""),
                     "opinion": sub_result.get("opinion", "Uncertain"),
+                    "first_sentence": sub_result.get("first_sentence", ""),
+                    "first_opinion": sub_result.get("first_opinion", "Uncertain"),
                     "verified_sentence": sub_result.get("verified_sentence", False),
                     "verified_opinion": sub_result.get("verified_opinion", None),
                     "retry_count": sub_result.get("retry_count", 0),
@@ -430,6 +442,8 @@ def process_all_texts(state: FilterState) -> FilterState:
                 result = {
                     "sentence": "Error during processing",
                     "opinion": "Uncertain",  # 오류 발생 시 Uncertain으로 설정
+                    "first_sentence": "Error during processing",
+                    "first_opinion": "Uncertain",  # 첫 번째도 Uncertain으로 설정
                     "verified_sentence": False,
                     "verified_opinion": None,
                     "retry_count": 5,
@@ -475,6 +489,9 @@ def finalize_results(state: FilterState) -> FilterState:
         result_df = df.copy()
         result_df["sentence"] = [result.get("sentence", "") for result in results]
         result_df["opinion"] = [result.get("opinion", "Uncertain") for result in results]
+        result_df["first_sentence"] = [result.get("first_sentence", "") for result in results]
+        result_df["first_opinion"] = [result.get("first_opinion", "Uncertain") for result in results]
+        result_df["retry_count"] = [result.get("retry_count", 0) for result in results]
         result_df["verified_sentence"] = [result.get("verified_sentence", False) for result in results]
         
         if config.use_gpt_verification:
