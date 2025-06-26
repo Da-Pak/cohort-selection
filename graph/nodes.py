@@ -57,6 +57,12 @@ def inference_single_text(state: SingleTextState) -> SingleTextState:
             first_opinion = opinion
             logger.info(f"첫 번째 추론 결과 저장: {first_opinion}")
         
+        # CoT 분석 결과 저장
+        inference_cot = {
+            "step1_analysis_and_evidence": result.get("step1_analysis_and_evidence", ""),
+            "step2_classification_reasoning": result.get("step2_classification_reasoning", "")
+        }
+        
         logger.info("추론 성공")
         return {
             **state,
@@ -64,6 +70,7 @@ def inference_single_text(state: SingleTextState) -> SingleTextState:
             "opinion": opinion,
             "first_sentence": first_sentence,
             "first_opinion": first_opinion,
+            "inference_cot": inference_cot,
             "current_step": "validate_sentence",
             "error": None
         }
@@ -169,12 +176,19 @@ def validate_case_node(state: SingleTextState) -> SingleTextState:
         # verifier 결과에서 is_correct 확인
         is_correct = verifier_result.get("is_correct", True)
         
+        # verifier CoT 분석 결과 저장
+        verifier_cot = {
+            "step1_analysis_and_sentence_verification": verifier_result.get("step1_analysis_and_sentence_verification", ""),
+            "step2_consistency_and_assessment": verifier_result.get("step2_consistency_and_assessment", "")
+        }
+        
         if is_correct:
             logger.info("케이스 검증 성공 - 처리 완료")
             return {
                 **state,
                 "verified_opinion": True,
                 "verifier_feedback": verifier_result,  # 피드백 저장
+                "verifier_cot": verifier_cot,  # verifier CoT 저장
                 "current_step": "completed",
                 "error": None
             }
@@ -184,6 +198,7 @@ def validate_case_node(state: SingleTextState) -> SingleTextState:
                 **state,
                 "verified_opinion": False,
                 "verifier_feedback": verifier_result,  # 피드백 저장
+                "verifier_cot": verifier_cot,  # verifier CoT 저장
                 "current_step": "inference",
                 "retry_count": state["retry_count"] + 1,
                 "error": None  # 검증 실패는 오류가 아님
@@ -434,7 +449,9 @@ def process_all_texts(state: FilterState) -> FilterState:
                     "verified_opinion": sub_result.get("verified_opinion", None),
                     "retry_count": sub_result.get("retry_count", 0),
                     "error": sub_result.get("error", None),
-                    "verifier_feedback": sub_result.get("verifier_feedback", None)  # 피드백도 포함
+                    "verifier_feedback": sub_result.get("verifier_feedback", None),  # 피드백도 포함
+                    "inference_cot": sub_result.get("inference_cot", None),  # inference CoT 포함
+                    "verifier_cot": sub_result.get("verifier_cot", None)  # verifier CoT 포함
                 }
                 
             except Exception as sub_error:
@@ -448,7 +465,9 @@ def process_all_texts(state: FilterState) -> FilterState:
                     "verified_opinion": None,
                     "retry_count": 5,
                     "error": str(sub_error),
-                    "verifier_feedback": None
+                    "verifier_feedback": None,
+                    "inference_cot": None,
+                    "verifier_cot": None
                 }
             
             # 결과에 추가
@@ -493,6 +512,27 @@ def finalize_results(state: FilterState) -> FilterState:
         result_df["first_opinion"] = [result.get("first_opinion", "Uncertain") for result in results]
         result_df["retry_count"] = [result.get("retry_count", 0) for result in results]
         result_df["verified_sentence"] = [result.get("verified_sentence", False) for result in results]
+        
+        # CoT 분석 결과 포함 (요약된 형태로)
+        def extract_cot_summary(cot_data, step_key):
+            if not cot_data or not cot_data.get(step_key):
+                return ""
+            text = cot_data.get(step_key, "")
+            # 너무 긴 텍스트는 요약하여 저장
+            return text[:200] + "..." if len(text) > 200 else text
+        
+        result_df["inference_analysis_and_evidence"] = [
+            extract_cot_summary(result.get("inference_cot"), "step1_analysis_and_evidence") for result in results
+        ]
+        result_df["inference_classification_reasoning"] = [
+            extract_cot_summary(result.get("inference_cot"), "step2_classification_reasoning") for result in results
+        ]
+        result_df["verifier_analysis_and_verification"] = [
+            extract_cot_summary(result.get("verifier_cot"), "step1_analysis_and_sentence_verification") for result in results
+        ]
+        result_df["verifier_consistency_and_assessment"] = [
+            extract_cot_summary(result.get("verifier_cot"), "step2_consistency_and_assessment") for result in results
+        ]
         
         if config.use_gpt_verification:
             result_df["verified_opinion"] = [result.get("verified_opinion", None) for result in results]

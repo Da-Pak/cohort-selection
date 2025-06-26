@@ -10,34 +10,47 @@ import time
 VERIFIER_PROMPT_TEMPLATE = """
 You are a medical expert acting as a "verifier" in a multi-stage system designed to analyze medical imaging reports.
 
-Your ONLY task is to verify whether a previous LLM's judgment was CORRECT or INCORRECT. You must NOT make your own medical judgment about Present/Absent/Uncertain.
+Your task is to verify whether a previous case identifier's analysis was CORRECT or INCORRECT using a systematic Chain-of-Thought approach.
 
-In a previous step, a "case identifier" LLM analyzed a clinical report and provided:
-- Label assigned: "{opinion}" (Present / Absent / Uncertain)  
-- Extracted sentence: "{sentence}"
+**INPUT:**
+- Context: {context}
+- Clinical question: {question}
+- Clinical report: {text}
+- Case identifier's result:
+  - Label: "{opinion}" (Present / Absent / Uncertain)
+  - Extracted sentence: "{sentence}"
 
-Context for interpretation: {context}
-Clinical question: {question}
-Clinical report: {text}
+**VERIFICATION PROCESS:**
 
-The case identifier was supposed to follow these guidelines:
-- "Present": Condition is explicitly reported as currently present/active
-- "Absent": Condition is clearly not present currently, or only mentioned as past history/resolved, or no relevant information found
-- "Uncertain": Condition's presence is unclear, ambiguous, uses tentative language (e.g., "possible," "suspected," "rule out"), or insufficient clarity
+**STEP 1: Independent Analysis and Sentence Verification**
+Perform your own analysis and evaluate sentence selection:
+1. Break down the report into individual sentences and analyze each for relevance
+2. For each sentence, determine: relation to condition, Present/Absent/Uncertain status, temporal indicators
+3. Evaluate the case identifier's sentence selection:
+   - Is the extracted sentence actually present in the report?
+   - Is it the MOST relevant sentence for the condition?
+   - Are there better sentences that address the condition?
+   - If "No relevant sentence found": Is this accurate or are there marginally relevant sentences?
 
-Your verification task:
-1. Check if the extracted sentence actually supports the assigned label
-2. Determine if the case identifier's judgment was reasonable given the sentence and context
-
-IMPORTANT: You must ONLY return "correct" or "incorrect" in the is_correct field. Do NOT return "uncertain" or any other value.
-
-If the judgment seems reasonable (even if you might have chosen differently), mark it as "correct".
-Only mark as "incorrect" if there's a clear error (e.g., "Present" assigned to clearly absent condition, or completely wrong sentence extraction).
+**STEP 2: Consistency Check and Final Assessment**
+Verify opinion-sentence consistency and make final decision:
+1. Check if the assigned opinion matches the extracted sentence:
+   - Does the sentence logically support "Present"/"Absent"/"Uncertain"?
+   - Is there a disconnect between sentence content and classification?
+2. Apply these guidelines:
+   - "Present": Condition explicitly reported as currently present/active
+   - "Absent": Condition clearly not present currently, past history only, or no relevant information
+   - "Uncertain": Unclear presence, ambiguous language, tentative expressions
+3. Final decision criteria:
+   - Mark "correct" if: reasonable sentence selection, opinion matches sentence, no major errors
+   - Mark "incorrect" only if: clearly wrong sentence when better options exist, major opinion-sentence mismatch, obvious misclassification
 
 Return your response in this exact JSON format:
 {{
+"step1_analysis_and_sentence_verification": "Your independent analysis and assessment of sentence selection appropriateness",
+"step2_consistency_and_assessment": "Consistency check between opinion and sentence, plus final reasoning for your decision",
 "is_correct": "correct" or "incorrect",
-"reason": "[If incorrect, briefly explain why. If correct, leave empty or write 'Answer is appropriate.']",
+"reason": "[If incorrect, briefly explain why. If correct, leave empty or write 'Analysis is reasonable.']",
 "correction_hint": "[If incorrect, provide specific guidance. If correct, leave empty.]"
 }}
 """
@@ -126,12 +139,18 @@ def verify_with_openai(text: str, question: str, context: str, inference_result:
                         logger.warning(f"Unexpected is_correct value: '{is_correct_value}', defaulting to True")
                         is_correct = True
                     
+                    # CoT 분석 결과 로깅
+                    logger.info(f"Verifier CoT - Independent Analysis: {result.get('step1_analysis_and_sentence_verification', 'N/A')[:100]}...")
+                    logger.info(f"Verifier CoT - Consistency Check: {result.get('step2_consistency_and_assessment', 'N/A')[:100]}...")
+                    
                     logger.info(f"Verification completed: opinion - {opinion}, Verification result - {is_correct}")
-                    # 전체 피드백 객체 반환
+                    # 전체 피드백 객체 반환 (CoT 결과 포함)
                     return {
                         "is_correct": is_correct,
                         "reason": result.get("reason", ""),
                         "correction_hint": result.get("correction_hint", ""),
+                        "step1_analysis_and_sentence_verification": result.get("step1_analysis_and_sentence_verification", ""),
+                        "step2_consistency_and_assessment": result.get("step2_consistency_and_assessment", ""),
                         "raw_response": verification_result
                     }
                 else:
@@ -260,12 +279,18 @@ def verify_with_local_model(text: str, question: str, context: str, inference_re
                         logger.warning(f"Unexpected is_correct value: '{is_correct_value}', defaulting to True")
                         is_correct = True
                     
+                    # CoT 분석 결과 로깅
+                    logger.info(f"Verifier CoT - Independent Analysis: {result.get('step1_analysis_and_sentence_verification', 'N/A')[:100]}...")
+                    logger.info(f"Verifier CoT - Consistency Check: {result.get('step2_consistency_and_assessment', 'N/A')[:100]}...")
+                    
                     logger.info(f"Verification completed: opinion - {opinion}, Verification result - {is_correct}")
-                    # 전체 피드백 객체 반환
+                    # 전체 피드백 객체 반환 (CoT 결과 포함)
                     return {
                         "is_correct": is_correct,
                         "reason": result.get("reason", ""),
                         "correction_hint": result.get("correction_hint", ""),
+                        "step1_analysis_and_sentence_verification": result.get("step1_analysis_and_sentence_verification", ""),
+                        "step2_consistency_and_assessment": result.get("step2_consistency_and_assessment", ""),
                         "raw_response": output_text
                     }
                 else:

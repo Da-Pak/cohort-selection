@@ -48,6 +48,10 @@ class SingleTextState(TypedDict):
     first_sentence: Optional[str]
     first_opinion: Optional[str]
     
+    # CoT 분석 결과 저장
+    inference_cot: Optional[Dict[str, Any]]  # inference의 CoT 분석 결과
+    verifier_cot: Optional[Dict[str, Any]]   # verifier의 CoT 분석 결과
+    
     # verifier 피드백 관련 필드 추가
     verifier_feedback: Optional[Dict[str, Any]]  # verifier의 전체 피드백 객체
     verifier_feedback_text: Optional[str]  # 포매팅된 피드백 텍스트
@@ -107,6 +111,10 @@ def get_initial_single_text_state(text: str, context: str, question: str, temper
         # 첫 번째 추론 결과 (retry와 상관없이 보존)
         first_sentence=None,
         first_opinion=None,
+        
+        # CoT 분석 결과 저장
+        inference_cot=None,
+        verifier_cot=None,
         
         # verifier 피드백 관련 필드 초기화
         verifier_feedback=None,
