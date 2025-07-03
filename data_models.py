@@ -52,7 +52,7 @@ class InferenceResult(BaseModel):
 
 class PipelineConfig(BaseModel):
     """Model for pipeline configuration"""
-    use_gpt_verification: bool = Field(True, description="Use GPT-4 verification")
+
     batch_size: int = Field(10, description="Batch size")
     max_workers: int = Field(4, description="Maximum number of concurrent workers")
     timeout: int = Field(60, description="Timeout (seconds)")

@@ -56,50 +56,9 @@ Your response must strictly follow this JSON format:
 def format_verifier_feedback(verifier_feedback: Optional[Dict[str, Any]]) -> str:
     """
     verifier 피드백을 프롬프트에 포함할 수 있는 형태로 포매팅합니다.
-    
-    Args:
-        verifier_feedback (Optional[Dict[str, Any]]): verifier의 피드백 객체
-        
-    Returns:
-        str: 포매팅된 피드백 텍스트 (공란이거나 피드백 내용)
+    이 함수는 더 이상 사용되지 않습니다.
     """
-    if not verifier_feedback:
-        return ""
-    
-    # verifier가 올바르다고 판단했거나 피드백이 없는 경우
-    if verifier_feedback.get("is_correct", True):
-        return ""
-    
-    # verifier가 틀렸다고 판단한 경우 피드백 포함
-    reason = verifier_feedback.get("reason", "").strip()
-    correction_hint = verifier_feedback.get("correction_hint", "").strip()
-    analysis_and_verification = verifier_feedback.get("step1_analysis_and_sentence_verification", "").strip()
-    consistency_and_assessment = verifier_feedback.get("step2_consistency_and_assessment", "").strip()
-    
-    feedback_parts = []
-    feedback_parts.append("**VERIFIER FEEDBACK - Previous Answer Correction Required:**")
-    
-    if analysis_and_verification:
-        feedback_parts.append(f"**Analysis and Sentence Selection Issue:** {analysis_and_verification}")
-    
-    if consistency_and_assessment:
-        feedback_parts.append(f"**Consistency and Assessment Issue:** {consistency_and_assessment}")
-    
-    if reason:
-        feedback_parts.append(f"**Reason for correction:** {reason}")
-    
-    if correction_hint:
-        feedback_parts.append(f"**Correction hint:** {correction_hint}")
-    
-    feedback_parts.append("")
-    feedback_parts.append("**IMPORTANT REMINDERS:**")
-    feedback_parts.append("- Re-analyze the report sentence by sentence")
-    feedback_parts.append("- Select the MOST relevant sentence for the condition")
-    feedback_parts.append("- Use 'No relevant sentence found' only when truly no sentences relate to the condition")
-    feedback_parts.append("- Ensure your opinion (Present/Absent/Uncertain) matches your selected sentence")
-    feedback_parts.append("")  # 빈 줄 추가
-    
-    return "\n".join(feedback_parts)
+    return ""
 
 logger = logging.getLogger(__name__)
 # OpenAI API key setup
@@ -120,23 +79,23 @@ DO_SAMPLE = True
 @timeit
 def infer_with_openai(text: str, context: str, question: str, temperature:float, verifier_feedback: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Perform LLM inference using OpenAI.
+    Perform LLM inference using OpenAI API.
     
     Args:
         text (str): Report text to analyze
         context (str): Context for analysis
         question (str): User question
         temperature (float): Temperature setting
-        verifier_feedback (Optional[Dict[str, Any]]): Verifier feedback object
+        verifier_feedback: 사용되지 않음 (하위 호환성을 위해 유지)
         
     Returns:
         Dict[str, Any]: Inference result (sentence, opinion)
     """
+
     try:
         config = get_config()
         
-        # verifier 피드백 포매팅
-        verifier_feedback_section = format_verifier_feedback(verifier_feedback)
+        # verifier 피드백 제거
         
         response = client.chat.completions.create(
             model=config.llm_config.openai_model_name,
@@ -146,7 +105,7 @@ def infer_with_openai(text: str, context: str, question: str, temperature:float,
                     text=text,
                     question=question,
                     context=context,
-                    verifier_feedback_section=verifier_feedback_section
+                    verifier_feedback_section=""
                 )}
             ],
             temperature=temperature,
@@ -155,122 +114,9 @@ def infer_with_openai(text: str, context: str, question: str, temperature:float,
         
         # Extract result from response
         output_text = response.choices[0].message.content.strip()
-        
-        # Extract JSON
-        try:
-            # Find JSON part
-            json_start = output_text.find("{")
-            json_end = output_text.rfind("}") + 1
-            if json_start != -1 and json_end != -1:
-                json_str = output_text[json_start:json_end]
-                result = safe_json_loads(json_str)
-                
-                # Validate result - CoT 결과 처리
-                if "sentence" in result and "opinion" in result:
-                    # Normalize opinion value
-                    opinion_lower = result["opinion"].lower().strip()
-                    if opinion_lower in ["present", "포함", "yes", "true"]:
-                        result["opinion"] = "Present"
-                    elif opinion_lower in ["absent", "제외", "no", "false"]:
-                        result["opinion"] = "Absent"
-                    elif opinion_lower in ["uncertain", "unclear", "unknown", "ambiguous", "불확실", "모호", "애매"]:
-                        result["opinion"] = "Uncertain"
-                    else:
-                        # 기본값을 Uncertain으로 설정
-                        result["opinion"] = "Uncertain"
-                    
-                    # CoT 분석 결과도 포함하여 반환 (로깅용)
-                    logger.info(f"CoT Analysis: {result.get('step1_analysis_and_evidence', 'N/A')[:100]}...")
-                    logger.info(f"Final Reasoning: {result.get('step2_classification_reasoning', 'N/A')[:100]}...")
-                    
-                    return result
-            
-            # Return default value if JSON parsing fails
-            logger.warning(f"JSON parsing failed, output: {output_text}")
-            return {
-                "sentence": "",
-                "opinion": "Uncertain"
-            }
-            
-        except Exception as e:
-            logger.error(f"JSON processing error: {e}")
-            return {
-                "sentence": "",
-                "opinion": "Uncertain"
-            }
-            
-    except Exception as e:
-        logger.error(f"Error during OpenAI inference: {e}")
-        return {
-            "sentence": "",
-            "opinion": "Uncertain"
-        }
 
-@timeit
-def infer_with_local_model(text: str, context: str, question: str, temperature:float, verifier_feedback: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Perform LLM inference using local model.
-    
-    Args:
-        text (str): Report text to analyze
-        context (str): Context for analysis
-        question (str): User question
-        temperature (float): Temperature setting
-        verifier_feedback (Optional[Dict[str, Any]]): Verifier feedback object
-        
-    Returns:
-        Dict[str, Any]: Inference result (sentence, opinion)
-    """
-    # 수정된 부분: utils.py에서 제공하는 함수 사용
-    model, tokenizer = get_loaded_model()
-    
-    try:
-        # verifier 피드백 포매팅
-        verifier_feedback_section = format_verifier_feedback(verifier_feedback)
-        
-        # Generate prompt
-        prompt = ANALYSIS_PROMPT_TEMPLATE.format(
-            text=text, 
-            context=context, 
-            question=question, 
-            verifier_feedback_section=verifier_feedback_section
-        )
-        # print("ANALYSIS_PROMPT_TEMPLATE",prompt)
-        # Tokenize and infer
-        
-        input_prompt = tokenizer.apply_chat_template(
-                [
-                    {"role": "user", "content": prompt},
-                ],
-                tokenize=False,
-                add_bos=True,
-                add_generation_prompt=True,
-                return_tensors="pt",
-            )
-        # logger.info(f"Inference input context length : {len(context)}")
-        # context_input = tokenizer(context, return_tensors="pt").to(DEVICE)
-        # logger.info(f"Inference input context tokenized length : {len(context_input.input_ids[0])}")
-        
-        inputs = tokenizer(input_prompt, return_tensors="pt").to(DEVICE)
-        
-        # inputs = tokenizer(prompt, return_tensors="pt").to(DEVICE)
-        
-        # Generate
-        with torch.no_grad():
-            outputs = model.generate(
-                inputs.input_ids,
-                attention_mask=inputs.attention_mask,
-                max_new_tokens=MAX_NEW_TOKENS,
-                temperature=temperature,
-                do_sample=DO_SAMPLE,
-            )
-        
-        # Decode output
-        output_text = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-        logger.info(f"Inference generated text length : {len(outputs[0][inputs.input_ids.shape[1]:])}")
-        # Extract JSON (find only the JSON part in the output)
+        # Parse JSON result
         try:
-            # Find JSON part
             json_start = output_text.find("{")
             json_end = output_text.rfind("}") + 1
             if json_start != -1 and json_end != -1:
@@ -311,13 +157,126 @@ def infer_with_local_model(text: str, context: str, question: str, temperature:f
                 "sentence": "",
                 "opinion": "Uncertain"
             }
-            
+        
     except Exception as e:
         logger.error(f"Error during inference: {e}")
         return {
             "sentence": "",
             "opinion": "Uncertain"
         }
+
+@timeit
+def infer_with_local_model(text: str, context: str, question: str, temperature:float, verifier_feedback: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Perform LLM inference using local model.
+    
+    Args:
+        text (str): Report text to analyze
+        context (str): Context for analysis
+        question (str): User question
+        temperature (float): Temperature setting
+        verifier_feedback: 사용되지 않음 (하위 호환성을 위해 유지)
+        
+    Returns:
+        Dict[str, Any]: Inference result (sentence, opinion)
+    """
+    # 수정된 부분: utils.py에서 제공하는 함수 사용
+    model, tokenizer = get_loaded_model()
+    
+    try:
+        # verifier 피드백 제거
+        
+        # Generate prompt
+        prompt = ANALYSIS_PROMPT_TEMPLATE.format(
+            text=text, 
+            context=context, 
+            question=question, 
+            verifier_feedback_section=""
+        )
+        # print("ANALYSIS_PROMPT_TEMPLATE",prompt)
+        # Tokenize and infer
+        
+        input_prompt = tokenizer.apply_chat_template(
+                [
+                    {"role": "user", "content": prompt},
+                ],
+                tokenize=False,
+                add_bos=True,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            )
+        # logger.info(f"Inference input context length : {len(context)}")
+        # context_input = tokenizer(context, return_tensors="pt").to(DEVICE)
+        # logger.info(f"Inference input context tokenized length : {len(context_input.input_ids[0])}")
+        
+        inputs = tokenizer(input_prompt, return_tensors="pt").to(DEVICE)
+        logger.info(f"Inference input length : {len(inputs.input_ids[0])}")
+        
+        # Generate
+        with torch.no_grad():
+            outputs = model.generate(
+                inputs.input_ids,
+                attention_mask=inputs.attention_mask,
+                max_new_tokens=MAX_NEW_TOKENS,
+                temperature=temperature,
+                do_sample=DO_SAMPLE,
+            )
+        
+        # Decode output
+        output_text = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+        
+        logger.info(f"Inference generated text length : {len(outputs[0][inputs.input_ids.shape[1]:])}")
+        
+        # Parse JSON result
+        try:
+            json_start = output_text.find("{")
+            json_end = output_text.rfind("}") + 1
+            if json_start != -1 and json_end != -1:
+                json_str = output_text[json_start:json_end]
+                result = safe_json_loads(json_str)
+                
+                # Validate result - CoT 결과 처리
+                if "sentence" in result and "opinion" in result:
+                    # Normalize opinion value
+                    opinion_lower = result["opinion"].lower().strip()
+                    if opinion_lower in ["present", "포함", "yes", "true"]:
+                        result["opinion"] = "Present"
+                    elif opinion_lower in ["absent", "제외", "no", "false"]:
+                        result["opinion"] = "Absent"
+                    elif opinion_lower in ["uncertain", "unclear", "unknown", "ambiguous", "불확실", "모호", "애매"]:
+                        result["opinion"] = "Uncertain"
+                    else:
+                        # 기본값을 Uncertain으로 설정
+                        result["opinion"] = "Uncertain"
+                    
+                    # CoT 분석 결과도 포함하여 반환 (로깅용)
+                    logger.info(f"CoT Analysis: {result.get('step1_analysis_and_evidence', 'N/A')[:100]}...")
+                    logger.info(f"Final Reasoning: {result.get('step2_classification_reasoning', 'N/A')[:100]}...")
+                    
+                    logger.info(f"opinion generation completed: Judgment - {result['opinion']}")
+                    return result
+            
+            # Return default value if JSON parsing fails
+            logger.warning(f"JSON parsing failed, output: {output_text}")
+            return {
+                "sentence": "",
+                "opinion": "Uncertain"
+            }
+            
+        except Exception as e:
+            logger.error(f"JSON processing error: {e}")
+            return {
+                "sentence": "",
+                "opinion": "Uncertain"
+            }
+        
+    except Exception as e:
+        logger.error(f"Error during inference: {e}")
+        return {
+            "sentence": "",
+            "opinion": "Uncertain"
+        }
+
         
 @timeit
 def inference_llm(text: str, context: str, question: str, llm_type: Literal["local", "openai"], temperature: float, verifier_feedback: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -330,7 +289,7 @@ def inference_llm(text: str, context: str, question: str, llm_type: Literal["loc
         question (str): User question  
         llm_type (str): LLM type to use ("local" or "openai")
         temperature (float): Temperature setting
-        verifier_feedback (Optional[Dict[str, Any]]): Verifier feedback object
+        verifier_feedback: 사용되지 않음 (하위 호환성을 위해 유지)
         
     Returns:
         Dict[str, Any]: Inference result (sentence, opinion)

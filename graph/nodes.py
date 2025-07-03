@@ -8,7 +8,6 @@ from ..utils import get_dataframe, update_task_status, get_config
 from .agents.prompt_generator import generate_context
 from .agents.llm_inference import inference_llm
 from ..verifier import verify_sentence
-from .agents.llm_verifier import verify_opinion
 from .state import FilterState, SingleTextState, get_initial_single_text_state
 
 logger = logging.getLogger(__name__)
@@ -18,19 +17,14 @@ def inference_single_text(state: SingleTextState) -> SingleTextState:
     try:
         logger.info(f"추론 시작 - 시도 {state['retry_count'] + 1}/{state['max_retries']}")
         
-        # verifier 피드백이 있는지 확인하고 로그 출력
-        verifier_feedback = state.get("verifier_feedback")
-        if verifier_feedback and not verifier_feedback.get("is_correct", True):
-            logger.info("이전 verifier 피드백을 사용하여 추론 재시도")
-        
-        # LLM 추론 실행 (verifier 피드백 포함)
+        # LLM 추론 실행 (verifier 피드백 제거)
         result = inference_llm(
             state["text"], 
             state["context"], 
             state["question"],
             llm_type=state["llm_type"],
             temperature=state["temperature"],
-            verifier_feedback=verifier_feedback
+            verifier_feedback=None
         )
         
         # 결과 검증 - 필수 키가 있는지 확인
@@ -109,11 +103,11 @@ def validate_sentence_node(state: SingleTextState) -> SingleTextState:
         verified = verify_sentence(state["text"], sentence)
         
         if verified:
-            logger.info("문장 검증 성공")
+            logger.info("문장 검증 성공 - 처리 완료")
             return {
                 **state,
                 "verified_sentence": True,
-                "current_step": "validate_case",
+                "current_step": "completed",
                 "error": None
             }
         else:
@@ -138,83 +132,6 @@ def validate_sentence_node(state: SingleTextState) -> SingleTextState:
         }
 
 
-def validate_case_node(state: SingleTextState) -> SingleTextState:
-    """케이스 검증을 수행합니다."""
-    try:
-        logger.info("케이스 검증 시작")
-        
-        # 필요한 데이터 확인
-        sentence = state.get("sentence", "")
-        opinion = state.get("opinion", "")
-        
-        if not sentence or not opinion:
-            # 이 상황은 라우터에서 이미 체크되어야 하지만, 안전을 위해 처리
-            logger.error("추론 결과가 불완전함 - 예상치 못한 상황")
-            return {
-                **state,
-                "verified_opinion": False,
-                "current_step": "inference",
-                "retry_count": state["retry_count"] + 1,
-                "error": "추론 결과 불완전"
-            }
-        
-        # 케이스 검증 실행 (의견 검증) - 이제 전체 피드백 객체 반환
-        result = {
-            "sentence": sentence,
-            "opinion": opinion
-        }
-        
-        verifier_result = verify_opinion(
-            state["text"], 
-            state["question"], 
-            state["context"],
-            result,
-            llm_type=state["llm_type"],
-            temperature=state["temperature"]
-        )
-        
-        # verifier 결과에서 is_correct 확인
-        is_correct = verifier_result.get("is_correct", True)
-        
-        # verifier CoT 분석 결과 저장
-        verifier_cot = {
-            "step1_analysis_and_sentence_verification": verifier_result.get("step1_analysis_and_sentence_verification", ""),
-            "step2_consistency_and_assessment": verifier_result.get("step2_consistency_and_assessment", "")
-        }
-        
-        if is_correct:
-            logger.info("케이스 검증 성공 - 처리 완료")
-            return {
-                **state,
-                "verified_opinion": True,
-                "verifier_feedback": verifier_result,  # 피드백 저장
-                "verifier_cot": verifier_cot,  # verifier CoT 저장
-                "current_step": "completed",
-                "error": None
-            }
-        else:
-            logger.info(f"케이스 검증 실패 - 재시도 필요. 피드백: {verifier_result.get('reason', 'N/A')}")
-            return {
-                **state,
-                "verified_opinion": False,
-                "verifier_feedback": verifier_result,  # 피드백 저장
-                "verifier_cot": verifier_cot,  # verifier CoT 저장
-                "current_step": "inference",
-                "retry_count": state["retry_count"] + 1,
-                "error": None  # 검증 실패는 오류가 아님
-            }
-            
-    except Exception as e:
-        error_msg = f"케이스 검증 중 오류 발생: {str(e)}"
-        logger.error(error_msg)
-        return {
-            **state,
-            "verified_opinion": None,
-            "current_step": "inference", 
-            "retry_count": state["retry_count"] + 1,
-            "error": error_msg
-        }
-
 def route_after_inference(state: SingleTextState) -> Literal["validate_sentence", "inference", "completed"]:
     """추론 후 다음 단계 결정"""
     # 최대 재시도 횟수 초과 시 종료
@@ -237,7 +154,7 @@ def route_after_inference(state: SingleTextState) -> Literal["validate_sentence"
     return "validate_sentence"
 
 
-def route_after_sentence_validation(state: SingleTextState) -> Literal["validate_case", "inference", "completed"]:
+def route_after_sentence_validation(state: SingleTextState) -> Literal["inference", "completed"]:
     """문장 검증 후 다음 단계 결정"""
     # 최대 재시도 횟수 초과 시 종료
     if state["retry_count"] >= state["max_retries"]:
@@ -246,10 +163,10 @@ def route_after_sentence_validation(state: SingleTextState) -> Literal["validate
     
     verified_sentence = state.get("verified_sentence")
     
-    # 문장 검증 성공 시 케이스 검증으로 진행
+    # 문장 검증 성공 시 완료
     if verified_sentence is True:
-        logger.info("문장 검증 성공 - 케이스 검증 단계로 진행")
-        return "validate_case"
+        logger.info("문장 검증 성공 - 처리 완료")
+        return "completed"
     
     # 문장 검증 실패 시 추론부터 다시 시작
     elif verified_sentence is False:
@@ -261,37 +178,13 @@ def route_after_sentence_validation(state: SingleTextState) -> Literal["validate
     return "inference"
 
 
-def route_after_case_validation(state: SingleTextState) -> Literal["inference", "completed"]:
-    """케이스 검증 후 다음 단계 결정"""
-    verified_opinion = state.get("verified_opinion")
-    
-    # 케이스 검증 성공 시 완료
-    if verified_opinion is True:
-        logger.info("케이스 검증 성공 - 처리 완료")
-        return "completed"
-    
-    # 최대 재시도 횟수 초과 시 종료
-    if state["retry_count"] >= state["max_retries"]:
-        logger.warning(f"최대 재시도 횟수({state['max_retries']}) 초과 - 처리 종료")
-        return "completed"
-    
-    # 케이스 검증 실패 시 추론부터 다시 시작
-    if verified_opinion is False:
-        logger.info("케이스 검증 실패 - 추론 단계로 재시도")
-        return "inference"
-    
-    # 예상치 못한 상황 (verified_opinion이 None 등)
-    logger.warning("케이스 검증 결과가 예상치 못한 값 - 추론 단계로 재시도")
-    return "inference"
-
 def create_single_text_subgraph():
     """단일 텍스트 처리용 서브그래프를 생성합니다."""
     sub = StateGraph(SingleTextState)
     
-    # 노드 추가
+    # 노드 추가 (validate_case 제거)
     sub.add_node("inference", inference_single_text)
     sub.add_node("validate_sentence", validate_sentence_node)
-    sub.add_node("validate_case", validate_case_node)
     
     # 엣지 추가 (조건부 라우팅)
     sub.add_conditional_edges(
@@ -307,16 +200,6 @@ def create_single_text_subgraph():
     sub.add_conditional_edges(
         "validate_sentence", 
         route_after_sentence_validation,
-        {
-            "validate_case": "validate_case",
-            "inference": "inference",
-            "completed": END
-        }
-    )
-    
-    sub.add_conditional_edges(
-        "validate_case",
-        route_after_case_validation, 
         {
             "inference": "inference",
             "completed": END
@@ -446,12 +329,9 @@ def process_all_texts(state: FilterState) -> FilterState:
                     "first_sentence": sub_result.get("first_sentence", ""),
                     "first_opinion": sub_result.get("first_opinion", "Uncertain"),
                     "verified_sentence": sub_result.get("verified_sentence", False),
-                    "verified_opinion": sub_result.get("verified_opinion", None),
                     "retry_count": sub_result.get("retry_count", 0),
                     "error": sub_result.get("error", None),
-                    "verifier_feedback": sub_result.get("verifier_feedback", None),  # 피드백도 포함
-                    "inference_cot": sub_result.get("inference_cot", None),  # inference CoT 포함
-                    "verifier_cot": sub_result.get("verifier_cot", None)  # verifier CoT 포함
+                    "inference_cot": sub_result.get("inference_cot", None)  # inference CoT 포함
                 }
                 
             except Exception as sub_error:
@@ -462,12 +342,9 @@ def process_all_texts(state: FilterState) -> FilterState:
                     "first_sentence": "Error during processing",
                     "first_opinion": "Uncertain",  # 첫 번째도 Uncertain으로 설정
                     "verified_sentence": False,
-                    "verified_opinion": None,
                     "retry_count": 5,
                     "error": str(sub_error),
-                    "verifier_feedback": None,
-                    "inference_cot": None,
-                    "verifier_cot": None
+                    "inference_cot": None
                 }
             
             # 결과에 추가
@@ -527,30 +404,9 @@ def finalize_results(state: FilterState) -> FilterState:
         result_df["inference_classification_reasoning"] = [
             extract_cot_summary(result.get("inference_cot"), "step2_classification_reasoning") for result in results
         ]
-        result_df["verifier_analysis_and_verification"] = [
-            extract_cot_summary(result.get("verifier_cot"), "step1_analysis_and_sentence_verification") for result in results
-        ]
-        result_df["verifier_consistency_and_assessment"] = [
-            extract_cot_summary(result.get("verifier_cot"), "step2_consistency_and_assessment") for result in results
-        ]
         
-        if config.use_gpt_verification:
-            result_df["verified_opinion"] = [result.get("verified_opinion", None) for result in results]
-            # 최종 결정 (verified_opinion이 True이면 opinion 사용, False이면 verifier 피드백 고려)
-            def determine_final_opinion(row):
-                if row["verified_opinion"] == True:
-                    return row["opinion"]
-                elif row["verified_opinion"] == False:
-                    # verifier가 틀렸다고 판단한 경우, 일단 Uncertain으로 처리
-                    # 추후 verifier 피드백을 더 정교하게 분석할 수 있음
-                    return "Uncertain"
-                else:
-                    # verified_opinion이 None인 경우 (검증하지 않았거나 오류)
-                    return row["opinion"]
-            
-            result_df["final_opinion"] = result_df.apply(determine_final_opinion, axis=1)
-        else:
-            result_df["final_opinion"] = result_df["opinion"]
+        # 최종 결정 (항상 inference의 opinion 사용)
+        result_df["final_opinion"] = result_df["opinion"]
         
         # 필터링 안하고 반환
         filtered_df = result_df.copy()

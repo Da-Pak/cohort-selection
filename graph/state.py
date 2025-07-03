@@ -42,7 +42,6 @@ class SingleTextState(TypedDict):
     sentence: Optional[str]
     opinion: Optional[str]
     verified_sentence: Optional[bool]
-    verified_opinion: Optional[bool]
     
     # 첫 번째 추론 결과 (retry와 상관없이 보존)
     first_sentence: Optional[str]
@@ -50,18 +49,13 @@ class SingleTextState(TypedDict):
     
     # CoT 분석 결과 저장
     inference_cot: Optional[Dict[str, Any]]  # inference의 CoT 분석 결과
-    verifier_cot: Optional[Dict[str, Any]]   # verifier의 CoT 분석 결과
-    
-    # verifier 피드백 관련 필드 추가
-    verifier_feedback: Optional[Dict[str, Any]]  # verifier의 전체 피드백 객체
-    verifier_feedback_text: Optional[str]  # 포매팅된 피드백 텍스트
     
     # 루프 제어
     retry_count: int
     max_retries: int
     
     # 상태 관리
-    current_step: str  # "inference", "validate_sentence", "validate_case", "completed"
+    current_step: str  # "inference", "validate_sentence", "completed"
     error: Optional[str]
 
 
@@ -106,7 +100,6 @@ def get_initial_single_text_state(text: str, context: str, question: str, temper
         sentence=None,
         opinion=None,
         verified_sentence=None,
-        verified_opinion=None,
         
         # 첫 번째 추론 결과 (retry와 상관없이 보존)
         first_sentence=None,
@@ -114,11 +107,6 @@ def get_initial_single_text_state(text: str, context: str, question: str, temper
         
         # CoT 분석 결과 저장
         inference_cot=None,
-        verifier_cot=None,
-        
-        # verifier 피드백 관련 필드 초기화
-        verifier_feedback=None,
-        verifier_feedback_text="",
         
         # 루프 제어
         retry_count=0,

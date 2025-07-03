@@ -19,7 +19,7 @@
 └── 오류 처리            │
                         │
 서브그래프 (SingleTextState) ←─┘
-├── 추론 → 문장검증 → 케이스검증
+├── 추론 → 문장검증
 └── 실패 시 최대 5번 재시도
 ```
 
@@ -40,14 +40,9 @@ graph TD
     B -->|재시도 초과| G[완료]
     
     C --> D{문장 검증 통과?}
-    D -->|통과| E[케이스 검증]
+    D -->|통과| G[완료]
     D -->|실패 & 재시도 가능| A
     D -->|재시도 초과| G
-    
-    E --> F{케이스 검증 통과?}
-    F -->|통과| G
-    F -->|실패 & 재시도 가능| A
-    F -->|재시도 초과| G
 ```
 
 ## 📊 상태 관리
@@ -86,7 +81,6 @@ class SingleTextState(TypedDict):
     sentence: str             # 추출된 문장
     opinion: str              # LLM 의견
     verified_sentence: bool   # 문장 검증 결과
-    verified_opinion: bool    # 의견 검증 결과
     
     # 루프 제어
     retry_count: int          # 현재 재시도 횟수
@@ -109,10 +103,7 @@ class SingleTextState(TypedDict):
 - **검증 방법**: 문자열 포함 관계 및 유사도 검사
 - **실패 조건**: 문장이 원본에 존재하지 않음
 
-#### 3. `validate_case_node`
-- **기능**: LLM을 통한 케이스 검증 (의견의 타당성 검증)
-- **검증 방법**: 별도 LLM 호출로 의견 재검증
-- **실패 조건**: 의견이 타당하지 않다고 판단됨
+
 
 ### 조건부 라우팅
 
@@ -126,18 +117,10 @@ def route_after_inference(state) -> Literal["validate_sentence", "inference", "c
 
 #### `route_after_sentence_validation`
 ```python
-def route_after_sentence_validation(state) -> Literal["validate_case", "inference", "completed"]:
+def route_after_sentence_validation(state) -> Literal["inference", "completed"]:
     # 최대 재시도 초과 → completed
-    # 문장 검증 성공 → validate_case
+    # 문장 검증 성공 → completed
     # 문장 검증 실패 → inference (재시도)
-```
-
-#### `route_after_case_validation`
-```python
-def route_after_case_validation(state) -> Literal["inference", "completed"]:
-    # 케이스 검증 성공 → completed
-    # 최대 재시도 초과 → completed
-    # 케이스 검증 실패 → inference (재시도)
 ```
 
 ## 🔄 재시도 메커니즘
@@ -145,7 +128,6 @@ def route_after_case_validation(state) -> Literal["inference", "completed"]:
 ### 재시도 조건
 - **추론 실패**: LLM 오류, 불완전한 응답
 - **문장 검증 실패**: 추출된 문장이 원본에 존재하지 않음
-- **케이스 검증 실패**: 의견이 타당하지 않다고 판단됨
 
 ### 재시도 제한
 - **최대 재시도 횟수**: 5번 (설정 가능)
@@ -177,7 +159,7 @@ filtered_df, result_id = filter_runner.run_filter(
         "temperature": 0.7
     },
     "retry_count": 5,              # 서브그래프에서 사용
-    "use_gpt_verification": True   # GPT 기반 의견 검증 사용
+
 }
 ```
 
@@ -190,8 +172,7 @@ graph/
 ├── filter_graph.py       # 메인 그래프 구성
 └── agents/
     ├── prompt_generator.py    # 컨텍스트 생성
-    ├── llm_inference.py       # LLM 추론
-    └── llm_verifier.py        # LLM 검증
+    └── llm_inference.py       # LLM 추론
 ```
 
 ### 주요 파일 설명

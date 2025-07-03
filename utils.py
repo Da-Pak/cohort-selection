@@ -53,15 +53,13 @@ class PipelineConfig(BaseModel):
     batch_size: int = Field(default=10, description="Number of texts to process in a single batch")
     max_workers: int = Field(default=4, description="Maximum number of parallel workers")
     retry_count: int = Field(default=1, description="Number of retries for failed operations")
-    use_gpt_verification: bool = Field(default=True, description="Whether to use GPT for verification")
     llm_config: LLMConfig = Field(default_factory=LLMConfig)
     
     def __str__(self):
         return (
             f"PipelineConfig(batch_size={self.batch_size}, "
             f"max_workers={self.max_workers}, "
-            f"retry_count={self.retry_count}, "
-            f"use_gpt_verification={self.use_gpt_verification})"
+            f"retry_count={self.retry_count})"
         )
 
 # Default pipeline configuration
