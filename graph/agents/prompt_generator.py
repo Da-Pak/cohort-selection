@@ -1,15 +1,19 @@
 import os
 import logging
 from typing import Dict, Any, Optional
-import openai
+import torch
 from cachetools import cached
-from ...utils import timeit, safe_json_loads, PROMPT_CACHE, get_config
+from ...utils import timeit, safe_json_loads, PROMPT_CACHE, get_config, get_loaded_model
 
 from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# OpenAI API 키 설정
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+MAX_NEW_TOKENS = 2000
+TEMPERATURE = 0.1
+TOP_P = 0.95
+DO_SAMPLE = True
 
 # ----------------------------------------------------------------------------------------------------------
 CONTEXT_PROMPT_TEMPLATE = """
@@ -36,43 +40,64 @@ Given a user's medical question: "{question}", your structured thought process m
 The resulting context will directly guide the LLM in accurately identifying and selecting relevant cases from each medical report.
 """
 # ----------------------------------------------------------------------------------------------------------
-client = openai.OpenAI(api_key= os.getenv("OPENAI_API_KEY"))
+
 @cached(cache=PROMPT_CACHE)
 @timeit
 def generate_context(question: str, temperature: float) -> str:
     """
-    Generate medical context based on user question.
+    Generate medical context based on user question using local Gemma3 27b model.
     
     Args:
         question (str): Natural language question from user
+        temperature (float): Temperature setting for generation
         
     Returns:
         str: Generated medical context
     """
     try:
-        logger.info(f"Context generation started: {question}")
-        config = get_config()
+        logger.info(f"Context generation started with local model: {question}")
         
-        # Call GPT API
-        response = client.chat.completions.create(
-            model=config.llm_config.openai_model_name,
-            messages=[
-                {"role": "system", "content": "You are a medical expert and natural language processing specialist."},
-                {"role": "user", "content": CONTEXT_PROMPT_TEMPLATE.format(question=question)}
+        # 로컬 모델 로드
+        model, tokenizer = get_loaded_model()
+        
+        # 프롬프트 생성
+        prompt = CONTEXT_PROMPT_TEMPLATE.format(question=question)
+        
+        # 토크나이저 적용
+        input_prompt = tokenizer.apply_chat_template(
+            [
+                {"role": "user", "content": prompt},
             ],
-            temperature=temperature,
-            max_tokens=config.llm_config.max_tokens,
+            tokenize=False,
+            add_bos=True,
+            add_generation_prompt=True,
+            return_tensors="pt",
         )
         
-        # Extract context from response
-        context = response.choices[0].message.content.strip()
-        print(f"Context : {context}")
-        logger.info(f"Context : {context}")
+        inputs = tokenizer(input_prompt, return_tensors="pt").to(DEVICE)
+        logger.info(f"Context generation input length: {len(inputs.input_ids[0])}")
+        
+        # 생성
+        with torch.no_grad():
+            outputs = model.generate(
+                inputs.input_ids,
+                attention_mask=inputs.attention_mask,
+                max_new_tokens=MAX_NEW_TOKENS,
+                temperature=temperature,
+                top_p=TOP_P,
+                do_sample=DO_SAMPLE,
+            )
+        
+        # 출력 디코딩
+        context = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+        
         logger.info(f"Context generation completed: {len(context)} characters")
-        return context
+        logger.info(f"Generated context length: {len(outputs[0][inputs.input_ids.shape[1]:])}")
+        
+        return context.strip()
     
     except Exception as e:
-        logger.error(f"Error during context generation: {e}")
+        logger.error(f"Error during context generation with local model: {e}")
         # Return default context on error
         return f"""
         User question: {question}
